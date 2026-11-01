@@ -1,0 +1,4 @@
+/target
+*.sqlite3*
+/config.toml
+/token.key

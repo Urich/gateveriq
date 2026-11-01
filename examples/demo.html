@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Gateveriq local test</title>
+<style>body{font:18px system-ui;background:#101827;color:#eef2ff;max-width:640px;margin:12vh auto;padding:24px}button{font:inherit;padding:12px 20px;margin:12px 8px 12px 0;cursor:pointer}#status{min-height:3em;padding:20px;background:#1c2940;border-radius:12px}small{color:#b9c7df}</style>
+<h1>Gateveriq</h1><p>Local request verification test</p>
+<p><small>This proof-of-work check increases automation cost. It does not prove human presence.</small></p>
+<div id="status" role="status" aria-live="polite">Ready</div>
+<button id="start">Run verification</button><button id="cancel" disabled>Cancel</button>
+<script type="module">
+import {GateveriqWidget} from '/widget.js';
+const status=document.querySelector('#status'),start=document.querySelector('#start'),cancel=document.querySelector('#cancel');
+const widget=new GateveriqWidget(status);
+let controller;
+cancel.onclick=()=>{controller?.abort();widget.cancel();};
+async function post(path,body,signal){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal});const data=await r.json();if(!r.ok)throw Error(data.error?.code||data.error||'Request failed');return data;}
+start.onclick=async()=>{
+ start.disabled=true;cancel.disabled=false;controller=new AbortController();status.textContent='Preparing…';const started=performance.now();
+ try{const p=await post('/prepare',{},controller.signal);const token=await widget.verify(p.challenge,{solutionURL:'/public/v1/solutions',signal:controller.signal});const r=await post('/complete',{operation_id:p.operation_id,verification_token:token},controller.signal);status.textContent=`${r.message} (${((performance.now()-started)/1000).toFixed(1)} s)`;}
+ catch(e){status.textContent=e.name==='AbortError'?'Cancelled':e.message;}
+ finally{start.disabled=false;cancel.disabled=true;}
+};
+</script></html>
