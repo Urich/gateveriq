@@ -180,3 +180,81 @@ before completing the next simulated login if you want a successful result.
 The failed-login switch is a local testing aid; production outcomes must come from
 the backend's actual password check. Browser solutions go directly to Gateveriq
 in this mode; Python still creates attempts and consumes tokens.
+
+## Action policies and registration
+
+Create an integration allowing `register,email_verify,login,unlock`, with the exact
+Neruvalo server origin. Set the policies locally (replace ID):
+
+```powershell
+gateveriq integration-visual-policy --id ID --action register --visual always
+gateveriq integration-visual-policy --id ID --action email_verify --visual always
+gateveriq integration-visual-policy --id ID --action login --visual adaptive
+gateveriq integration-visual-policy --id ID --action unlock --visual always
+```
+
+Only allowed actions can have a policy. Unconfigured actions default to adaptive.
+Policies are snapshotted when the challenge is created, including challenges made
+through the internal PoW API. Changes apply to new challenges only. `always`
+requires website mode (configure origins); without a bound website attempt it
+fails closed. Browser input cannot relax the policy. All token issuance routes
+check the snapshot, even when no visual task exists yet.
+
+The existing endpoints accept every allowed action:
+
+```json
+{"integration_id":"ID","action":"register","context_id":"32-byte-base64url","account_id":"opaque-id","origin":"https://neruvalo.example"}
+```
+
+POST this to `/internal/v1/web/attempts` using backend bearer authentication.
+For always, prepare returns `decision: additional_verification_required`,
+`challenge`, `visual`, and `verification_token: null`. Pass this payload to
+`verifyWebsiteAttempt`. The widget solves PoW and submits images to
+`/public/v1/web/visual/solutions`; success returns `verification_token` and
+`expires_at`. Consume it through `/internal/v1/verifications/consume`:
+
+```json
+{"integration_id":"ID","action":"register","context_id":"32-byte-base64url","request_id":"stable-request-id","verification_token":"token"}
+```
+
+```json
+{"valid":true,"action":"register","context_id":"32-byte-base64url","verification_method":"pow_visual"}
+```
+
+Methods are `pow` and `pow_visual`, describing actual token issuance, not the
+configured policy. Exact consume retries return the same fields during receipt
+retention even after token/task expiry. A different request ID is rejected.
+Neruvalo should require `pow_visual` for register, email_verify and unlock.
+
+Use `createAttempt` to generate identifiers, save them before network I/O, then
+call `prepareAttempt(saved)`. Repeat with the same saved values after a network
+failure; return the saved attempt on page reload. `prepareLogin` remains a
+compatible wrapper; `reportOutcome` already accepts any action. The SDK returns
+all consume fields. See [registration example](../examples/registration.mjs).
+Its Maps are illustrative: use durable transactions, immutable request payloads,
+and operation ownership checks in production. A wrong email code spends its
+permission; the next submission requires a new email_verify context and images.
+Registration may grant one initial code submission without a second challenge.
+Never execute a business operation again merely because consume retry succeeded.
+
+Account risk history is scoped by integration, account hash and action. Success
+does not erase risk history. Transport-source/IP risk remains shared across actions.
+Account lockout, emails, OPAQUE, and a protected desktop status channel belong to
+Neruvalo; no passwords, codes, email addresses or recovery links go to GateVeriq.
+
+### Upgrade
+
+Back up the SQLite database and token key, stop the old server, replace the binary,
+and start it normally. Startup transactionally migrates schema version 1 to 2;
+reopening an upgraded database is safe. Existing attempts stay adaptive. Existing
+issued tokens conservatively report pow: the old schema did not snapshot the
+method at issuance, so a later passed task cannot prove the method of an older
+token. Start a new attempt if your application requires pow_visual. Old outcomes recover action from the linked
+challenge; outcomes with deleted challenges keep NULL action and do not contribute
+to action-specific account risk. Configure new policies after upgrading.
+
+Used context identifiers are retained in `used_contexts` after challenge cleanup,
+so an expired operation cannot be recreated with the same context. This compact
+ledger grows with operations and has no automatic pruning. Existing contexts
+already deleted before upgrading cannot be recovered. Generate random contexts.
+Do not downgrade the binary against this schema; restore a pre-upgrade backup.

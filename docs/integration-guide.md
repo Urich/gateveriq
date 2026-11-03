@@ -60,3 +60,8 @@ cargo run --locked -- solve --challenge challenge.json --submit-url https://exam
 ```
 
 Without `--submit-url`, the command outputs solution JSON. This MVP provides a Rust module and CLI, not platform installers or dedicated Android/iOS SDK packages. Native callers must discard work on operation cancellation; the current Rust solver checks expiry but has no cancellation handle.
+
+Registration and recovery actions use the same website API. See
+[action policies](website-integration.md#action-policies-and-registration) and the
+[backend example](../examples/registration.mjs). Run its tests with
+`node tests/registration.mjs`.

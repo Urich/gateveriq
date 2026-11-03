@@ -27,14 +27,20 @@ export class GateveriqClient {
   }
 
   /** Save contextId, requestId and the account/action in your server session. */
-  async prepareLogin({accountId, origin, action = 'login'}) {
-    const contextId = randomBytes(32).toString('base64url');
-    const requestId = randomBytes(32).toString('base64url');
+  createAttempt({accountId, origin, action = 'login'}) {
+    return {accountId, origin, action, contextId: randomBytes(32).toString('base64url'),
+      requestId: randomBytes(32).toString('base64url')};
+  }
+
+  async prepareAttempt({accountId, origin, action = 'login',
+    contextId = randomBytes(32).toString('base64url'), requestId = randomBytes(32).toString('base64url')}) {
     const attempt = await this.post('/internal/v1/web/attempts', {
       action, context_id: contextId, account_id: accountId, origin,
     });
     return {contextId, requestId, action, attempt};
   }
+
+  async prepareLogin(options) { return this.prepareAttempt(options); }
 
   async consume({contextId, requestId, action = 'login', verificationToken}) {
     const result = await this.post('/internal/v1/verifications/consume', {

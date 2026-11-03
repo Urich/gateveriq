@@ -32,3 +32,11 @@ assert.equal(result.decision, 'additional_verification_required');
 assert.equal(result.verification_token, undefined);
 await assert.rejects(scope.verifyWebsiteAttempt(null, {decision: 'unexpected'}), /Invalid website attempt/);
 console.log('Backend SDK binding, error propagation and pending additional check passed');
+
+const saved = client.createAttempt({accountId:'opaque', origin:'https://site.example', action:'email_verify'});
+await client.prepareAttempt(saved);
+await client.prepareAttempt(saved);
+assert.deepEqual(calls.at(-1).body, calls.at(-2).body);
+const methods = new GateveriqClient({fetchImpl: async () => ({ok:true, json:async () =>
+  ({valid:true, action:'register', context_id:'context', verification_method:'pow_visual'})})});
+assert.equal((await methods.consume({})).verification_method, 'pow_visual');

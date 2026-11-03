@@ -99,7 +99,7 @@ pub fn prepare(app: &Shared, headers: &HeaderMap, p: WebsitePrepare) -> Result<V
         if !allowed {
             return Err(Error(StatusCode::FORBIDDEN, "ORIGIN_NOT_ALLOWED"));
         }
-        let failures: i64 = db.query_row("SELECT COUNT(*) FROM login_outcomes WHERE integration_id=?1 AND account_hash=?2 AND success=0 AND created>?3", params![p.integration_id,account,service::now()-app.config.website.history_retention_seconds], |r| r.get(0)).map_err(db_error)?;
+        let failures: i64 = db.query_row("SELECT COUNT(*) FROM login_outcomes WHERE integration_id=?1 AND account_hash=?2 AND action=?4 AND success=0 AND created>?3", params![p.integration_id,account,service::now()-app.config.website.history_retention_seconds,p.action], |r| r.get(0)).map_err(db_error)?;
         failures >= i64::from(app.config.website.account_failure_limit)
     };
     let c = service::prepare(
@@ -129,9 +129,16 @@ pub fn prepare(app: &Shared, headers: &HeaderMap, p: WebsitePrepare) -> Result<V
         return Err(bad("CONTEXT_MISMATCH"));
     }
     let pending_visual = crate::visual::pending(&tx, &c.challenge_id)?;
+    let always: bool = tx
+        .query_row(
+            "SELECT visual_policy='always' FROM challenges WHERE id=?1",
+            [&c.challenge_id],
+            |r| r.get(0),
+        )
+        .map_err(db_error)?;
     tx.commit().map_err(db_error)?;
     drop(db);
-    if needs_visual || pending_visual {
+    if always || needs_visual || pending_visual {
         return crate::visual::offer(app, &c.challenge_id, &p.origin);
     }
     Ok(json!({"decision":"verify", "challenge":c}))
@@ -159,7 +166,21 @@ pub(crate) fn gate(
     id: &str,
     origin: Option<&str>,
 ) -> Result<(), Error> {
-    let Some((integration, account)) = binding(tx, id, origin)? else {
+    let (always, action): (bool, String) = tx
+        .query_row(
+            "SELECT visual_policy='always',action FROM challenges WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(db_error)?;
+    let bound = binding(tx, id, origin)?;
+    if always && !crate::visual::passed(tx, id)? {
+        return Err(Error(
+            StatusCode::FORBIDDEN,
+            "ADDITIONAL_VERIFICATION_REQUIRED",
+        ));
+    }
+    let Some((integration, account)) = bound else {
         return Ok(());
     };
     if crate::visual::passed(tx, id)? {
@@ -171,7 +192,7 @@ pub(crate) fn gate(
             "ADDITIONAL_VERIFICATION_REQUIRED",
         ));
     }
-    let failures:i64 = tx.query_row("SELECT COUNT(*) FROM login_outcomes WHERE integration_id=?1 AND account_hash=?2 AND success=0 AND created>?3",params![integration,account,service::now()-app.config.website.history_retention_seconds], |r| r.get(0)).map_err(db_error)?;
+    let failures:i64 = tx.query_row("SELECT COUNT(*) FROM login_outcomes WHERE integration_id=?1 AND account_hash=?2 AND action=?4 AND success=0 AND created>?3",params![integration,account,service::now()-app.config.website.history_retention_seconds,action], |r| r.get(0)).map_err(db_error)?;
     if failures >= i64::from(app.config.website.account_failure_limit) {
         return Err(Error(
             StatusCode::FORBIDDEN,
@@ -198,8 +219,8 @@ pub fn outcome(app: &Shared, headers: &HeaderMap, p: LoginOutcome) -> Result<Val
     let row:Option<(String,String)> = tx.query_row("SELECT c.id,w.account_hash FROM challenges c JOIN website_attempts w ON w.challenge_id=c.id WHERE c.integration_id=?1 AND c.action=?2 AND c.context=?3 AND c.request_id=?4 AND c.consumed_at>?5",params![p.integration_id,p.action,p.context_id,p.request_id,service::now()-app.config.retention_seconds],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_error)?;
     let (id, account) = row.ok_or(bad("VERIFICATION_NOT_CONSUMED"))?;
     tx.execute(
-        "INSERT OR IGNORE INTO login_outcomes VALUES(?1,?2,?3,?4,?5)",
-        params![id, p.integration_id, account, p.success, service::now()],
+        "INSERT OR IGNORE INTO login_outcomes(challenge_id,integration_id,account_hash,success,created,action) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![id, p.integration_id, account, p.success, service::now(), p.action],
     )
     .map_err(db_error)?;
     let existing: bool = tx

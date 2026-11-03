@@ -100,6 +100,24 @@ impl App {
         CREATE INDEX IF NOT EXISTS challenge_integration ON challenges(integration_id,expires);")?;
         crate::website::migrate(&db)?;
         crate::visual::migrate(&db)?;
+        let upgraded: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=2)",
+            [],
+            |r| r.get(0),
+        )?;
+        if !upgraded {
+            db.execute_batch("BEGIN IMMEDIATE;
+                ALTER TABLE challenges ADD COLUMN visual_policy TEXT NOT NULL DEFAULT 'adaptive';
+                ALTER TABLE challenges ADD COLUMN verification_method TEXT NOT NULL DEFAULT 'pow';
+                ALTER TABLE login_outcomes ADD COLUMN action TEXT;
+                UPDATE login_outcomes SET action=(SELECT action FROM challenges WHERE id=challenge_id);
+                CREATE TABLE action_visual_policies(integration_id TEXT NOT NULL,action TEXT NOT NULL,visual TEXT NOT NULL CHECK(visual IN ('adaptive','always')),PRIMARY KEY(integration_id,action),FOREIGN KEY(integration_id,action) REFERENCES actions(integration_id,action));
+                CREATE TABLE used_contexts(integration_id TEXT NOT NULL,action TEXT NOT NULL,context TEXT NOT NULL,PRIMARY KEY(integration_id,action,context));
+                INSERT INTO used_contexts SELECT integration_id,action,context FROM challenges;
+                CREATE INDEX outcome_action_history ON login_outcomes(integration_id,account_hash,action,created);
+                INSERT INTO schema_migrations VALUES(2);
+                COMMIT;")?;
+        }
         Ok(Arc::new(Self {
             db: Mutex::new(db),
             config,
@@ -284,6 +302,10 @@ pub fn prepare(app: &Shared, headers: &HeaderMap, p: Prepare) -> Result<Challeng
             Err(bad("CHALLENGE_EXPIRED"))
         };
     }
+    let used: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM used_contexts WHERE integration_id=?1 AND action=?2 AND context=?3)", params![p.integration_id,p.action,p.context_id], |r| r.get(0)).map_err(db_error)?;
+    if used {
+        return Err(bad("CONTEXT_ALREADY_USED"));
+    }
     let count: u32 = tx
         .query_row(
             "SELECT COUNT(*) FROM challenges WHERE integration_id=?1 AND expires>?2",
@@ -302,6 +324,12 @@ pub fn prepare(app: &Shared, headers: &HeaderMap, p: Prepare) -> Result<Challeng
         expires_at: now() + app.config.challenge_ttl_seconds,
     };
     tx.execute("INSERT INTO challenges(id,integration_id,action,context,salt,difficulty,expires) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![c.challenge_id,p.integration_id,p.action,p.context_id,c.salt,c.difficulty_bits,c.expires_at]).map_err(db_error)?;
+    tx.execute(
+        "INSERT INTO used_contexts VALUES(?1,?2,?3)",
+        params![p.integration_id, p.action, p.context_id],
+    )
+    .map_err(db_error)?;
+    tx.execute("UPDATE challenges SET visual_policy=COALESCE((SELECT visual FROM action_visual_policies WHERE integration_id=?1 AND action=?2),'adaptive') WHERE id=?3", params![p.integration_id,p.action,c.challenge_id]).map_err(db_error)?;
     tx.commit().map_err(db_error)?;
     Ok(c)
 }
@@ -380,8 +408,8 @@ pub(crate) fn solution_with_origin(
     }
     if solved.is_none() {
         tx.execute(
-            "UPDATE challenges SET solved_at=?1,token_hash=?2,token_expires=?3 WHERE id=?4",
-            params![t, core::hash(token.as_bytes()), expiry, c.challenge_id],
+            "UPDATE challenges SET solved_at=?1,token_hash=?2,token_expires=?3,verification_method=?5 WHERE id=?4",
+            params![t, core::hash(token.as_bytes()), expiry, c.challenge_id, if visual_passed { "pow_visual" } else { "pow" }],
         )
         .map_err(db_error)?;
     }
@@ -400,9 +428,17 @@ pub fn consume(app: &Shared, headers: &HeaderMap, p: Consume) -> Result<Value, E
     app.limit(format!("consume:{}", p.integration_id))?;
     let mut db = app.db.lock().unwrap();
     let tx = db.transaction().map_err(db_error)?;
-    type Row = (String, String, String, i64, Option<i64>, Option<String>);
-    let row:Option<Row>=tx.query_row("SELECT integration_id,action,context,token_expires,consumed_at,request_id FROM challenges WHERE token_hash=?1",[core::hash(p.verification_token.as_bytes())],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(db_error)?;
-    let (integration, action, context, expires, consumed, request) =
+    type Row = (
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        Option<String>,
+        String,
+    );
+    let row:Option<Row>=tx.query_row("SELECT integration_id,action,context,token_expires,consumed_at,request_id,verification_method FROM challenges WHERE token_hash=?1",[core::hash(p.verification_token.as_bytes())],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(db_error)?;
+    let (integration, action, context, expires, consumed, request, method) =
         row.ok_or(bad("INVALID_TOKEN"))?;
     if integration != p.integration_id {
         return Err(bad("INVALID_TOKEN"));
@@ -432,7 +468,7 @@ pub fn consume(app: &Shared, headers: &HeaderMap, p: Consume) -> Result<Value, E
         .map_err(db_error)?;
     }
     tx.commit().map_err(db_error)?;
-    Ok(json!({"valid":true,"action":action,"context_id":context}))
+    Ok(json!({"valid":true,"action":action,"context_id":context,"verification_method":method}))
 }
 /// Evaluate persistent per-integration / transport-source history before issuing tokens.
 /// Forwarded headers and client-supplied addresses are deliberately not trusted.

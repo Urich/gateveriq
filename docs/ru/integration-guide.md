@@ -79,3 +79,8 @@ cargo run --locked -- solve --challenge challenge.json --submit-url https://exam
 и CLI, но не установщики и не отдельные Android/iOS SDK. При отмене операции
 клиент должен отбрасывать результат. Нативный решатель проверяет срок действия,
 но отдельного механизма отмены у него нет.
+
+Метод consume `verification_method` сохраняется при выдаче токена: `pow` или
+`pow_visual`. Политики и обновление БД описаны в [интеграции сайта](website-integration.md).
+Пример backend: [registration.mjs](../../examples/registration.mjs).
+Проверка примера: `node tests/registration.mjs`.

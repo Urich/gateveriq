@@ -168,3 +168,9 @@ binding remain unchanged. At the last wrong answer HTTP returns 429
 VISUAL_ATTEMPTS_EXHAUSTED, with no replacement task. Re-fetching an offer returns
 the current task and does not reset its budget. For a new login attempt, the last
 retained visual category for the same account/integration is also excluded.
+
+## Verification method and action policy
+
+Consume returns `verification_method` (`pow` or `pow_visual`), persisted at token
+issuance and stable across receipt retries. Mandatory policies are snapshotted per
+challenge. See [action policies and migration](website-integration.md#action-policies-and-registration).

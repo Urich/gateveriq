@@ -34,6 +34,15 @@ enum Command {
         #[arg(long, required = true, value_delimiter = ',')]
         actions: Vec<String>,
     },
+    /// Set visual verification for an allowed action (existing attempts keep their policy).
+    IntegrationVisualPolicy {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        action: String,
+        #[arg(long, value_parser = ["adaptive", "always"])]
+        visual: String,
+    },
     IntegrationRotate {
         #[arg(long)]
         id: String,
@@ -167,6 +176,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(
                 "{}",
                 serde_json::json!({"integration_id":id,"integration_secret":secret})
+            );
+        }
+        Command::IntegrationVisualPolicy { id, action, visual } => {
+            app.db.lock().unwrap().execute("INSERT INTO action_visual_policies(integration_id,action,visual) VALUES(?1,?2,?3) ON CONFLICT(integration_id,action) DO UPDATE SET visual=excluded.visual", rusqlite::params![id,action,visual])?;
+            println!(
+                "{}",
+                serde_json::json!({"integration_id":id,"action":action,"visual":visual})
             );
         }
         Command::IntegrationRotate { id, grace_seconds } => {

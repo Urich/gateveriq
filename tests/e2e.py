@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory() as directory:
             raise AssertionError('Replay accepted')
         except urllib.error.HTTPError as error:
             assert json.load(error)['error']['code']=='TOKEN_ALREADY_CONSUMED'
-        integration = json.loads(cli('integration-create', '--name', 'website', '--actions', 'login', '--origins', 'http://127.0.0.1:8090'))
+        integration = json.loads(cli('integration-create', '--name', 'website', '--actions', 'login,register', '--origins', 'http://127.0.0.1:8090'))
         context = secrets.token_urlsafe(32)
         attempt = {'integration_id':integration['integration_id'], 'action':'login', 'context_id':context, 'account_id':'opaque-account', 'origin':'http://127.0.0.1:8090'}
         prepared_web = post(internal, '/internal/v1/web/attempts', attempt, True)
@@ -78,6 +78,11 @@ with tempfile.TemporaryDirectory() as directory:
         solution['behavior'] = {'challenge_id':challenge['challenge_id'], 'elapsed_ms':1000, 'activation_ms':500, 'trusted_activations':1, 'pointer_events':0, 'keyboard_events':1, 'focus_changes':1}
         process.terminate();process.wait();process=launch()
         verified = post(public, '/public/v1/web/solutions', solution, origin='http://127.0.0.1:8090')
+        cli('integration-visual-policy', '--id', integration['integration_id'], '--action', 'register', '--visual', 'always')
+        mandatory = {'integration_id':integration['integration_id'], 'action':'register', 'context_id':base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode(), 'account_id':'registration-account', 'origin':'http://127.0.0.1:8090'}
+        registration = post(internal, '/internal/v1/web/attempts', mandatory, True)
+        assert registration['visual'] and registration['verification_token'] is None
+        assert post(internal, '/internal/v1/web/attempts', mandatory, True) == registration
         consume = {'integration_id':integration['integration_id'], 'action':'login', 'context_id':context, 'request_id':'website-login', 'verification_token':verified['verification_token']}
         assert post(internal, '/internal/v1/verifications/consume', consume, True)['valid']
         outcome = {key:consume[key] for key in ['integration_id','action','context_id','request_id']}

@@ -840,7 +840,7 @@ async fn website_preflight_and_submit_time_additional_decision() {
     a.db.lock()
         .unwrap()
         .execute(
-            "INSERT INTO login_outcomes VALUES(?1,?2,?3,0,?4)",
+            "INSERT INTO login_outcomes(challenge_id,integration_id,account_hash,success,created,action) VALUES(?1,?2,?3,0,?4,'register')",
             rusqlite::params![core::random(), id, account, now()],
         )
         .unwrap();
@@ -1065,4 +1065,173 @@ fn visual_attempts_expiration_and_no_reset() {
             )
             .unwrap();
     assert_eq!(count, 0);
+}
+#[tokio::test]
+async fn mandatory_visual_snapshot_and_receipt() {
+    let (_dir, a, id, h) = website_setup();
+    a.db.lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO action_visual_policies VALUES(?1,'register','always')",
+            [&id],
+        )
+        .unwrap();
+    let ctx = core::random();
+    let offered = web_prepare(&a, &h, &id, &ctx, "mandatory").unwrap();
+    assert!(offered["verification_token"].is_null());
+    let c: core::Challenge = serde_json::from_value(offered["challenge"].clone()).unwrap();
+    assert_eq!(
+        offered,
+        web_prepare(&a, &h, &id, &ctx, "mandatory").unwrap()
+    );
+    for path in ["/public/v1/solutions", "/public/v1/web/solutions"] {
+        let (_, response) = web_submit(a.clone(), &c, Some("https://site.example"), path).await;
+        assert!(response
+            .get("verification_token")
+            .is_none_or(|v| v.is_null()));
+    }
+    a.db.lock()
+        .unwrap()
+        .execute("UPDATE action_visual_policies SET visual='adaptive'", [])
+        .unwrap();
+    assert_eq!(
+        offered,
+        web_prepare(&a, &h, &id, &ctx, "mandatory").unwrap()
+    );
+    // Even a missing task cannot bypass the snapshotted requirement.
+    a.db.lock()
+        .unwrap()
+        .execute(
+            "DELETE FROM visual_tasks WHERE challenge_id=?1",
+            [&c.challenge_id],
+        )
+        .unwrap();
+    let (_, response) = web_submit(
+        a.clone(),
+        &c,
+        Some("https://site.example"),
+        "/public/v1/solutions",
+    )
+    .await;
+    assert!(response.get("verification_token").is_none());
+    let offered = gateveriq::visual::offer(&a, &c.challenge_id, "https://site.example").unwrap();
+    let solved =
+        gateveriq::visual::solve(&a, "https://site.example", visual_answer(&a, &c, &offered))
+            .unwrap();
+    let token = solved["verification_token"].as_str().unwrap();
+    let first = consume(&a, &h, request(&id, token, &ctx, "mandatory-request")).unwrap();
+    assert_eq!(first["verification_method"], "pow_visual");
+    a.db.lock()
+        .unwrap()
+        .execute("UPDATE visual_tasks SET expires=0", [])
+        .unwrap();
+    a.db.lock()
+        .unwrap()
+        .execute("UPDATE challenges SET token_expires=0", [])
+        .unwrap();
+    let reopened = App::open(a.config.clone()).unwrap();
+    assert_eq!(
+        first,
+        consume(
+            &reopened,
+            &h,
+            request(&id, token, &ctx, "mandatory-request")
+        )
+        .unwrap()
+    );
+    assert!(consume(&a, &h, request(&id, token, &ctx, "different-request")).is_err());
+}
+
+#[test]
+fn outcome_history_is_scoped_to_action() {
+    let (_dir, a, id, h) = website_setup();
+    let ctx = core::random();
+    let initial = web_prepare(&a, &h, &id, &ctx, "scoped").unwrap();
+    let challenge = initial["challenge"]["challenge_id"].as_str().unwrap();
+    let db = a.db.lock().unwrap();
+    let account: String = db
+        .query_row(
+            "SELECT account_hash FROM website_attempts WHERE challenge_id=?1",
+            [challenge],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute(
+        "INSERT INTO login_outcomes VALUES('other',?1,?2,0,?3,'email_verify')",
+        rusqlite::params![id, account, now()],
+    )
+    .unwrap();
+    drop(db);
+    assert_eq!(
+        web_prepare(&a, &h, &id, &core::random(), "scoped").unwrap()["decision"],
+        "verify"
+    );
+    a.db.lock()
+        .unwrap()
+        .execute("UPDATE login_outcomes SET action='register'", [])
+        .unwrap();
+    assert_eq!(
+        web_prepare(&a, &h, &id, &core::random(), "scoped").unwrap()["decision"],
+        "additional_verification_required"
+    );
+}
+
+#[test]
+fn migration_preserves_legacy_attempts_and_unknown_outcomes() {
+    let (_dir, a, id, h) = setup();
+    let c = prepare(
+        &a,
+        &h,
+        Prepare {
+            integration_id: id.clone(),
+            action: "register".into(),
+            context_id: "legacy".into(),
+        },
+    )
+    .unwrap();
+    let db = a.db.lock().unwrap();
+    db.execute_batch("DROP TABLE used_contexts; DROP TABLE action_visual_policies; DROP INDEX outcome_action_history;
+        ALTER TABLE challenges DROP COLUMN visual_policy;
+        ALTER TABLE challenges DROP COLUMN verification_method;
+        ALTER TABLE login_outcomes DROP COLUMN action;
+        DELETE FROM schema_migrations WHERE version=2;").unwrap();
+    db.execute(
+        "INSERT INTO login_outcomes VALUES('deleted-challenge',?1,'hash',0,?2)",
+        rusqlite::params![id, now()],
+    )
+    .unwrap();
+    drop(db);
+    let upgraded = App::open(a.config.clone()).unwrap();
+    let db = upgraded.db.lock().unwrap();
+    let unknown: Option<String> = db
+        .query_row("SELECT action FROM login_outcomes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(unknown, None);
+    let policy: String = db
+        .query_row(
+            "SELECT visual_policy FROM challenges WHERE id=?1",
+            [&c.challenge_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(policy, "adaptive");
+    drop(db);
+    App::open(a.config.clone()).unwrap();
+}
+
+#[test]
+fn cleaned_context_cannot_be_recreated() {
+    let (_dir, a, id, h) = setup();
+    let p = || Prepare {
+        integration_id: id.clone(),
+        action: "register".into(),
+        context_id: "used".into(),
+    };
+    prepare(&a, &h, p()).unwrap();
+    a.db.lock()
+        .unwrap()
+        .execute("UPDATE challenges SET expires=0", [])
+        .unwrap();
+    a.cleanup().unwrap();
+    assert_eq!(prepare(&a, &h, p()).unwrap_err().1, "CONTEXT_ALREADY_USED");
 }
