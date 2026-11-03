@@ -2,4 +2,5 @@
 *.sqlite3*
 /config.toml
 /token.key
+/.demo-credentials.json
 /.idea/*

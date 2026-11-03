@@ -21,6 +21,14 @@ the small illustration bank can be memorized by bots. See [security](docs/securi
 
 ## Start the website demo
 
+On Windows, run `powershell -ExecutionPolicy Bypass -File .\start.ps1`.
+The script builds the project, initializes missing configuration, saves and reuses
+demo credentials in `.demo-credentials.json`, and starts both the API and website.
+Open http://127.0.0.1:8090; press Ctrl+C to stop. Use `-InitOnly` to prepare without
+starting servers. Requires Rust/Cargo, C/C++ build tools and Python 3 (for the demo).
+Keep `.demo-credentials.json` private. Existing configuration must use the default
+local API addresses (`127.0.0.1:9080` and `127.0.0.1:9081`).
+
 From the repository root, initialize once:
 
 ```powershell
