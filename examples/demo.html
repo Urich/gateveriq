@@ -5,9 +5,10 @@
 <h1>Gateveriq</h1><p>Local request verification test</p>
 <p><small>This proof-of-work check increases automation cost. It does not prove human presence.</small></p>
 <div id="status" role="status" aria-live="polite">Ready</div>
+<label><input id="failed" type="checkbox"> Simulate a failed password (website mode)</label><br>
 <button id="start">Run verification</button><button id="cancel" disabled>Cancel</button>
 <script type="module">
-import {GateveriqWidget} from '/widget.js';
+import {GateveriqWidget,verifyWebsiteAttempt} from '/widget.js';
 const status=document.querySelector('#status'),start=document.querySelector('#start'),cancel=document.querySelector('#cancel');
 const widget=new GateveriqWidget(status);
 let controller;
@@ -15,7 +16,7 @@ cancel.onclick=()=>{controller?.abort();widget.cancel();};
 async function post(path,body,signal){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal});const data=await r.json();if(!r.ok)throw Error(data.error?.code||data.error||'Request failed');return data;}
 start.onclick=async()=>{
  start.disabled=true;cancel.disabled=false;controller=new AbortController();status.textContent='Preparing…';const started=performance.now();
- try{const p=await post('/prepare',{},controller.signal);const token=await widget.verify(p.challenge,{solutionURL:'/public/v1/solutions',signal:controller.signal});const r=await post('/complete',{operation_id:p.operation_id,verification_token:token},controller.signal);status.textContent=`${r.message} (${((performance.now()-started)/1000).toFixed(1)} s)`;}
+ try{const p=await post('/prepare',{failed_login:document.querySelector('#failed').checked},controller.signal);let token;if(p.website){const result=await verifyWebsiteAttempt(status,p,{serviceURL:'http://127.0.0.1:9080',signal:controller.signal});if(result.decision!=='verified')throw Error('Additional verification required');token=result.verification_token;}else{token=await widget.verify(p.challenge,{solutionURL:'/public/v1/solutions',signal:controller.signal});}const r=await post('/complete',{operation_id:p.operation_id,verification_token:token},controller.signal);status.textContent=`${r.message} (${((performance.now()-started)/1000).toFixed(1)} s)`;}
  catch(e){status.textContent=e.name==='AbortError'?'Cancelled':e.message;}
  finally{start.disabled=false;cancel.disabled=true;}
 };

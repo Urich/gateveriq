@@ -1,62 +1,104 @@
 # Gateveriq
 
-Self-hosted proof-of-work request verification for independent applications.
+[English](README.md) | [Русский](README.ru.md)
 
-Gateveriq issues short-lived SHA-256 challenges and single-use verification tokens. It is application-neutral: registration, email delivery, account policies and business rate limits belong to the integrating application.
+Self-hosted experimental anti-bot verification for websites and independent applications.
 
-**Status: experimental MVP for local testing.** Proof of work raises the cost of automation; it does not prove that a user is human. There are no image puzzles, fingerprinting, behavioral scoring or third-party tracking.
+Gateveriq combines SHA-256 proof of work, optional browser/behavior checks,
+persistent attempt history, account-bound login attempts and visual additional
+verification. Integrate a browser widget and a server API; no hosted verification
+provider is required at runtime.
+
+**Experimental MVP, not proof of human presence.** Client signals can be forged and
+the small illustration bank can be memorized by bots. See [security](docs/security.md).
 
 ## Requirements
 
-- Stable Rust with Cargo (edition 2021); C compiler for bundled SQLite.
-- Linux: `build-essential` on Debian/Ubuntu, or GCC on Fedora.
-- A modern browser with Web Workers, Web Crypto and BigInt, served over HTTPS or localhost.
+- Stable Rust and Cargo (edition 2021), with a C compiler for bundled SQLite.
+- A modern browser supporting modules, Workers, Web Crypto and BigInt.
+- HTTPS or localhost for browser testing.
+- Python 3 for the demo/HTTP tests; Node.js for JS tests and the optional backend SDK.
 
-## Quick start
+## Start the website demo
 
-```sh
-git clone https://github.com/Urich/gateveriq.git
-cd gateveriq
-git checkout prototype
+From the repository root, initialize once:
+
+```powershell
 cargo build --locked
 cargo run --locked -- init
-cargo run --locked -- integration-create --name example --actions register,comment
+cargo run --locked -- integration-create --name visual-demo --actions demo --origins http://127.0.0.1:8090
 cargo run --locked -- serve
 ```
 
-Save the generated integration ID and secret. The secret is printed once; never put it in browser code. `init` creates a private configuration and token key without overwriting existing files. Keep the database and token key together across restarts. On Windows, restrict their ACL to the service account yourself.
+Skip `init` if configuration exists. Save the ID and secret printed by the create
+command. Entering their JSON into the running server console does not configure
+a client. In a second PowerShell terminal:
 
-Public API: `http://127.0.0.1:9080`. Internal API: `http://127.0.0.1:9081`.
-
-## First verification
-
-Replace the placeholders with the output of `integration-create`:
-
-```sh
-export GATEVERIQ_ID='YOUR_INTEGRATION_ID'
-export GATEVERIQ_SECRET='YOUR_INTEGRATION_SECRET'
-curl --fail-with-body http://127.0.0.1:9081/internal/v1/challenges \
-  -H "Authorization: Bearer $GATEVERIQ_SECRET" \
-  -H 'Content-Type: application/json' \
-  -d "{\"integration_id\":\"$GATEVERIQ_ID\",\"action\":\"register\",\"context_id\":\"local-test-1\"}" \
-  -o challenge.json
-cargo run --locked -- solve --challenge challenge.json \
-  --submit-url http://127.0.0.1:9080/public/v1/solutions
+```powershell
+$env:GATEVERIQ_ID = "ID_FROM_COMMAND"
+$env:GATEVERIQ_SECRET = "SECRET_FROM_COMMAND"
+$env:GATEVERIQ_WEBSITE = "1"
+python examples/demo.py
 ```
 
-Copy `verification_token` from the response:
+Open **http://127.0.0.1:8090**, use **Run verification**, then **Confirm verification**.
+The public API is on `127.0.0.1:9080`; the internal API is on `127.0.0.1:9081`.
+This demo is a local test harness, not a production login backend.
+
+To see illustrations, check **Simulate a failed password** and complete five
+verifications. The next attempt shows images. For a shorter test, set
+`account_failure_limit = 1` under the single `[website]` section of `config.toml`
+and restart the Rust server. Wrong image answers change the object and board
+without resetting the three-answer budget or deadline. After upgrades, restart
+the server and reload the browser with Ctrl+F5.
+
+For Linux/macOS environment syntax and the original demo, see [testing](docs/testing.md).
+
+## Integrate a real website
 
 ```sh
-export GATEVERIQ_TOKEN='RETURNED_TOKEN'
-curl --fail-with-body http://127.0.0.1:9081/internal/v1/verifications/consume \
-  -H "Authorization: Bearer $GATEVERIQ_SECRET" \
-  -H 'Content-Type: application/json' \
-  -d "{\"integration_id\":\"$GATEVERIQ_ID\",\"verification_token\":\"$GATEVERIQ_TOKEN\",\"action\":\"register\",\"context_id\":\"local-test-1\",\"request_id\":\"consume-1\"}"
+cargo run --locked -- integration-create --name website --actions login --origins https://your-site.example
 ```
 
-Repeating the consume request returns the same success. Changing `request_id` fails. Use a **new context** for the next test.
+The backend creates an account-bound attempt. The browser submits its proof directly
+to Gateveriq; the widget shows images when risk requires an extra check. The backend
+consumes the token before checking credentials, reports the actual login outcome
+and executes its operation once. Keep the integration secret on the backend.
 
-For a clickable browser test, see [Interactive browser test](docs/testing.md#interactive-browser-test).
+Serve `web/widget.js` and `web/worker.js` on your website. The optional Node.js
+backend client is `sdk/server.mjs`. [Complete examples](docs/website-integration.md).
+
+## Modes and history
+
+| Option | Behavior |
+|---|---|
+| No screening flags | Original PoW-only API |
+| `--browser-check` | Requires browser observations and checks automation indicators |
+| `--behavior-check` | Also requires a bounded interaction report tied to the challenge |
+| `--history-check` | Persistent frequency/failure rules per integration and source IP |
+| `--origins https://site.example` | Website mode: all three checks, origins, account binding and outcomes |
+
+Defaults: 20 submissions per UTC minute; five verification failures in ten minute
+buckets trigger a history rejection; five reported login failures per account in
+the retained history trigger extra verification. History lasts 24 hours by default.
+Configure thresholds under `[website]`. Successes do not erase failures.
+Forwarded-IP headers are ignored.
+
+The local visual bank contains 24 illustrations in six categories. Boards have 16
+distinct pictures, up to three wrong answers and a maximum 120-second lifetime.
+The bank is a style prototype, not a production CAPTCHA.
+
+## Documentation
+
+- [Documentation index](docs/README.md) / [Русская документация](docs/ru/README.md)
+- [Architecture](docs/architecture.md)
+- [Protocol and errors](docs/protocol.md)
+- [General integration](docs/integration-guide.md)
+- [Website login and visual demo](docs/website-integration.md)
+- [Deployment and configuration](docs/deployment.md)
+- [Security and limitations](docs/security.md)
+- [Testing and troubleshooting](docs/testing.md)
+- [Illustrations and generation prompts](assets/visual/README.md)
 
 ## Development
 
@@ -65,19 +107,13 @@ cargo fmt --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 node tests/worker.mjs
+node tests/behavior.mjs
+node tests/visual.mjs
+node tests/sdk.mjs
 cargo build --locked
-python3 tests/e2e.py
+python tests/e2e.py
 ```
 
-No release publishing or artifact upload workflow is configured. Build and run locally.
-
-## Documentation
-
-- [Architecture](docs/architecture.md)
-- [Protocol](docs/protocol.md)
-- [Integration guide and browser widget](docs/integration-guide.md)
-- [Deployment and configuration](docs/deployment.md)
-- [Security model and limitations](docs/security.md)
-- [Testing guide](docs/testing.md)
-
-Licensing has not yet been selected. This repository does not currently grant an open-source license.
+Use `python3` where needed. On Windows stop the debug server before rebuilding it,
+or use a separate target directory as described in testing. No release publishing
+workflow or open-source license is currently configured.

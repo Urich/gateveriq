@@ -17,6 +17,18 @@ enum Command {
     Init,
     Serve,
     IntegrationCreate {
+        /// Reject missing browser signals and common automation indicators.
+        #[arg(long)]
+        browser_check: bool,
+        /// Require explicit browser interaction as well as browser screening.
+        #[arg(long)]
+        behavior_check: bool,
+        /// Enforce persistent per-source attempt rate and failure history.
+        #[arg(long)]
+        history_check: bool,
+        /// Exact website origins (scheme, host, optional port). Enables website mode.
+        #[arg(long, value_delimiter = ',')]
+        origins: Vec<String>,
         #[arg(long)]
         name: String,
         #[arg(long, required = true, value_delimiter = ',')]
@@ -67,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let parent = std::fs::canonicalize(parent)?;
         let key = parent.join("token.key");
         let config = Config {
+            website: Default::default(),
             database: parent.join("gateveriq.sqlite3").to_string_lossy().into(),
             token_key_file: key.to_string_lossy().into(),
             public_listen: "127.0.0.1:9080".parse()?,
@@ -115,8 +128,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = App::open(config)?;
     match cli.command {
         Command::Serve => service::serve(app).await?,
-        Command::IntegrationCreate { name, actions } => {
+        Command::IntegrationCreate {
+            name,
+            actions,
+            browser_check,
+            behavior_check,
+            history_check,
+            origins,
+        } => {
+            for origin in &origins {
+                gateveriq::website::validate_origin(origin)?;
+            }
             let (id, secret) = app.create_integration(&name, &actions)?;
+            if browser_check || behavior_check || !origins.is_empty() {
+                app.db
+                    .lock()
+                    .unwrap()
+                    .execute("INSERT INTO browser_policies VALUES(?1)", [&id])?;
+            }
+            if history_check || !origins.is_empty() {
+                app.db
+                    .lock()
+                    .unwrap()
+                    .execute("INSERT INTO history_policies VALUES(?1)", [&id])?;
+            }
+            if behavior_check || !origins.is_empty() {
+                app.db
+                    .lock()
+                    .unwrap()
+                    .execute("INSERT INTO behavior_policies VALUES(?1)", [&id])?;
+            }
+            for origin in origins {
+                app.db.lock().unwrap().execute(
+                    "INSERT OR IGNORE INTO website_origins VALUES(?1,?2)",
+                    rusqlite::params![id, origin],
+                )?;
+            }
             println!(
                 "{}",
                 serde_json::json!({"integration_id":id,"integration_secret":secret})

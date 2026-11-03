@@ -1,5 +1,7 @@
 # Security model
 
+[English](security.md) | [Русский](ru/security.md)
+
 ## What successful verification means
 
 A valid SHA-256 proof was submitted for a server-issued challenge and the bound token was consumed by the correct integration. It does not prove human presence, device integrity or a legitimate account. Attackers can automate the solver, outsource work or use faster hardware. Proof of work cannot replace email policies, authentication, per-account limits or ingress protection.
@@ -19,7 +21,7 @@ A valid SHA-256 proof was submitted for a server-issued challenge and the bound 
 
 ## Limitations to understand before deployment
 
-This is an unaudited experimental MVP. No independent security review or load qualification has been performed. Public proof submissions are deliberately unauthenticated. Apply request/concurrency/connection limits at ingress; service rate limiting happens after JSON parsing and does not stop bandwidth or connection exhaustion. Counters reset on restart and fixed windows permit bursts around boundaries. The global bucket cardinality cap can temporarily reject new sources under a distributed attack.
+This is an unaudited experimental MVP. No independent security review or load qualification has been performed. Public proof submissions are deliberately unauthenticated. Apply request/concurrency/connection limits at ingress; service rate limiting happens after JSON parsing and does not stop bandwidth or connection exhaustion. In-memory counters reset on restart; persistent history survives. Fixed windows permit bursts around boundaries. The global bucket cardinality cap can temporarily reject new sources under a distributed attack.
 
 SQLite calls are synchronous and serialized inside async request handlers. Suitable for an initial test deployment, not a high-throughput public service. Use one process per database; additional processes have independent request counters. No automatic adaptive difficulty or global disk quota is provided. Monitor disk usage and configure external resource limits.
 
@@ -32,3 +34,20 @@ Keep server clocks synchronized. Avoid backwards clock jumps. Protect the config
 ## Reporting
 
 Until a private security contact is configured, do not publish exploitable details or credentials in a public issue. Request a private reporting channel from the repository owner.
+
+## Website risk policy
+
+Website mode adds exact-origin binding, account HMACs, backend-only login outcomes
+and a 24-hour default history window. Browser and behavior reports remain forgeable.
+Per-source public-submission history uses the transport peer, not forwarded headers.
+Outcome reports require a previously consumed verification and are immutable and
+idempotent. The integration backend is trusted to report truthful outcomes and
+bind the account/context to its own server session. Account targeting can cause
+extra checks for victims; these thresholds need operational validation.
+
+Additional-verification decisions never grant a token by themselves. Completion
+requires a bound, expiring visual task and the original PoW solution. The current
+small static illustration corpus is a prototype that bots can memorize or recognize;
+it is not a production-strength CAPTCHA. No nonvisual alternative is implemented. Errors and infrastructure failures must fail closed
+in the host login flow. HMAC identifiers are pseudonymous; retain the key privately.
+Cleanup is batched and may lag; risk queries exclude expired history immediately.

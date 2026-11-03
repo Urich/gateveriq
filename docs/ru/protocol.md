@@ -1,0 +1,217 @@
+# Протокол v1
+
+[English](../protocol.md) | [Русский](protocol.md)
+
+Запросы используют JSON в UTF-8, тело не более 4096 байт. Неизвестные поля
+отклоняются. Время задаётся Unix-секундами UTC; определяющими являются часы сервера.
+Лимит относится к запросу, а не к ответу с картинками.
+
+ID, соли и токены — 32 байта в каноническом Base64URL без padding, 43 символа.
+Nonce — ровно 8 байт, 11 символов. Действие, контекст и request ID исходного API
+содержат 1–128 ASCII-букв, цифр либо символов `_-.:`.
+
+## Создание задачи
+
+`POST /internal/v1/challenges` требует `Authorization: Bearer <integration_secret>`:
+
+```json
+{"integration_id":"<id>","action":"register","context_id":"<unique-operation-id>"}
+```
+
+Ответ:
+
+```json
+{"challenge_id":"<id>","algorithm":"sha256-pow-v1","salt":"<salt>","difficulty_bits":18,"expires_at":1800000000}
+```
+
+Та же комбинация интеграции, действия и контекста возвращает исходную задачу,
+пока она действительна. Просроченный контекст отклоняется до удаления записи.
+Для новой операции всегда создавайте новый ID.
+
+## Вычисление решения
+
+Хешируется конкатенация без разделителей и префиксов длины:
+
+1. UTF-8-байты `gateveriq:pow:v1`.
+2. Декодированный ID задачи: 32 байта.
+3. Декодированная соль: 32 байта.
+4. Nonce: 8 байт.
+
+Первые `difficulty_bits` битов SHA-256 должны быть нулевыми, начиная со старшего
+бита. Браузерный и нативный решатели перебирают беззнаковые 64-битные счётчики
+в little-endian, но допустим любой подходящий восьмибайтный nonce.
+
+## Отправка решения
+
+`POST /public/v1/solutions`, без авторизации:
+
+```json
+{"challenge_id":"<id>","nonce":"<nonce>"}
+```
+
+Ответ:
+
+```json
+{"verification_token":"<token>","expires_at":1800000060}
+```
+
+Корректный повтор возвращает тот же токен без продления срока, пока задача и
+токен действительны, а токен не использован. После истечения задачи нужна
+новая операция, даже если ранее ответ об успехе потерялся.
+
+Байты токена:
+`HMAC-SHA256(token_key, UTF8("gateveriq:verification:v1") || decoded_challenge_id)`.
+В БД хранится SHA-256 строки токена в Base64URL.
+
+## Использование токена
+
+`POST /internal/v1/verifications/consume`, с авторизацией:
+
+```json
+{"integration_id":"<id>","verification_token":"<token>","action":"register","context_id":"<operation-id>","request_id":"<stable-consumption-id>"}
+```
+
+Ответ:
+
+```json
+{"valid":true,"action":"register","context_id":"<operation-id>"}
+```
+
+Первое использование должно произойти до истечения токена. Точные повторы с
+тем же request ID и привязкой успешны в течение `retention_seconds` после
+использования, даже если токен уже просрочен. Другой request ID отклоняется.
+Чужая интеграция даёт `INVALID_TOKEN`, неверные действие или контекст —
+`CONTEXT_MISMATCH`.
+
+## Ошибки
+
+Формат прикладной ошибки: `{"error":{"code":"CODE","retryable":false}}`.
+
+| HTTP | Коды |
+|---|---|
+| 400 | INVALID_REQUEST, CHALLENGE_NOT_FOUND, CHALLENGE_EXPIRED, INVALID_SOLUTION, INVALID_TOKEN, TOKEN_EXPIRED, TOKEN_ALREADY_CONSUMED, CONTEXT_MISMATCH |
+| 401 | UNAUTHORIZED |
+| 403 | ACTION_NOT_ALLOWED, BROWSER_SIGNALS_REQUIRED, AUTOMATION_SUSPECTED, BEHAVIOR_SIGNALS_REQUIRED, BEHAVIOR_REJECTED |
+| 429 | RATE_LIMITED, ATTEMPT_RATE_LIMITED, ATTEMPT_HISTORY_BLOCKED |
+| 503 | SERVICE_UNAVAILABLE |
+
+Ошибки Axum при неверном JSON, Content-Type, размере, маршруте или методе могут
+быть текстовыми: 400/404/405/413/415/422. Клиент должен обрабатывать не-JSON.
+Временные сбои повторяйте с ограниченным увеличением задержки, сохраняя
+контекст и request ID. Ошибка не является разрешением операции.
+
+## Данные браузера
+
+При `--browser-check` к `challenge_id` и `nonce` добавляется поле:
+
+```json
+{"browser":{"webdriver":false,"cookies_enabled":true,"languages_count":1}}
+```
+
+Это недоверенные наблюдения, а не аттестация. Отсутствие даёт 403
+`BROWSER_SIGNALS_REQUIRED`, признаки автоматизации — `AUTOMATION_SUSPECTED`.
+Без политики остаётся допустим исходный формат. В режиме сайта подозрительные
+сигналы могут вместо окончательного отказа назначить визуальную задачу.
+
+## Поведенческий отчёт
+
+`--behavior-check` также включает проверку браузера и требует объект `behavior`:
+
+```json
+{"behavior":{"challenge_id":"<same-id>","elapsed_ms":1000,"activation_ms":500,"trusted_activations":1,"pointer_events":0,"keyboard_events":1,"focus_changes":1}}
+```
+
+Все числа — целые неотрицательные. Требуется
+`300 <= activation_ms <= elapsed_ms <= challenge_ttl_seconds * 1000`.
+`trusted_activations`: 1–20, остальные счётчики: 0–4096.
+Отсутствие даёт 403 `BEHAVIOR_SIGNALS_REQUIRED`, несогласованность —
+`BEHAVIOR_REJECTED`. Срок задачи и PoW проверяются независимо. Движение мыши
+не обязательно, отчёт не доказывает присутствие человека.
+
+## Сохраняемая история
+
+`--history-check` включает историю по интеграции и IP соединения.
+По умолчанию принимаются 20 отправок за минуту UTC. Пять ошибок проверки за
+текущую и девять предыдущих минут блокируют последующие отправки с 429
+`ATTEMPT_HISTORY_BLOCKED`. Частотный лимит даёт `ATTEMPT_RATE_LIMITED`.
+Пороги меняются в `[website]`. Отклонённые по лимиту запросы не продлевают окно.
+Успешные повторы тоже учитываются в частоте. Проверка предшествует выдаче
+токена и не отзывает ранее выданные токены. Поля клиента и заголовки с IP
+не принимаются за удостоверение источника. Ограничения прокси описаны в README.
+
+## API сайта
+
+Полный сценарий: [подключение сайта](website-integration.md).
+
+### Подготовка попытки
+
+Авторизованный `POST /internal/v1/web/attempts` принимает:
+
+```json
+{"integration_id":"<id>","action":"login","context_id":"<random-32-byte-base64url>","account_id":"<opaque-account-id>","origin":"https://site.example"}
+```
+
+`context_id` — случайные 32 байта в каноническом Base64URL. `account_id` —
+непрозрачная строка 1–128 символов без управляющих символов. Origin должен
+точно совпадать с настроенным. Контекст неизменно связывает аккаунт, действие
+и origin. Ответ — `decision: "verify"` с `challenge` либо
+`decision: "additional_verification_required"`, `reason: "risk_policy"`,
+`challenge`, `visual` и `verification_token: null`.
+
+### Решение браузера
+
+Публичный `POST /public/v1/web/solutions` принимает обычную схему решения и
+заголовок Origin. Поддерживается OPTIONS/CORS. Origin должен совпадать с
+привязкой и списком интеграции. Исходный маршрут не выдаёт токены для задач
+сайта. Повышенный риск может вернуть визуальную задачу с HTTP 403.
+
+Далее сервер сайта использует токен через обычный consume API с исходными
+действием/контекстом и постоянным серверным request ID.
+
+### Результат входа
+
+Авторизованный `POST /internal/v1/web/outcomes` принимает:
+
+```json
+{"integration_id":"<id>","action":"login","context_id":"<context>","request_id":"<request>","success":false}
+```
+
+Нужен ранее использованный токен с этой привязкой в пределах срока квитанции.
+Ответ — `{"recorded":true}`. Точный повтор идемпотентен; изменение результата
+даёт 400 `OUTCOME_CONFLICT`. Нет подходящего использования — 400
+`VERIFICATION_NOT_CONSUMED`. Браузер не может сообщать результат напрямую.
+
+Неверный origin даёт 403 `ORIGIN_NOT_ALLOWED`. Это касается отсутствия origin,
+его изменения и задач, подготовленных через исходный API. Разрешены точные
+канонические HTTPS origins, HTTP — только локально; wildcard и пути запрещены.
+CORS/Origin не являются доказательством против HTTP-бота.
+
+## Визуальная дополнительная проверка
+
+Объект `visual` содержит `task_id`, `expires_at`, `instruction`, `reference`
+(PNG data URL), `images` (16 PNG data URL в порядке отображения) и
+`max_attempts` — оставшийся бюджет, первоначально 3. Поля с ответом нет.
+
+Публичный `POST /public/v1/web/visual/solutions` принимает:
+
+```json
+{"challenge_id":"<id>","task_id":"<task>","nonce":"<original-pow>","selected":[1,5,8]}
+```
+
+Индексы начинаются с нуля, различны и находятся в диапазоне 0–15. Origin
+проверяется как для исходной попытки; OPTIONS поддерживается. Успех возвращает
+обычный токен, который сервер приложения всё равно должен использовать.
+
+Возможны ошибки 400: `INVALID_VISUAL_SOLUTION`, `VISUAL_NOT_FOUND`,
+`VISUAL_EXPIRED`, `INVALID_SOLUTION`, `CHALLENGE_EXPIRED`, `INVALID_REQUEST`.
+При неправильном выборе и оставшемся бюджете HTTP 400 содержит
+`error.code: "INVALID_VISUAL_SOLUTION"` и новый объект `visual`.
+Категория и task ID меняются, старый ID недействителен. Бюджет и исходный срок
+не сбрасываются. Последний неправильный ответ возвращает 429
+`VISUAL_ATTEMPTS_EXHAUSTED` без замены.
+
+Повторное получение возвращает текущую задачу, не обнуляя ошибки. Для новой
+попытки исключается последняя сохранённая категория того же аккаунта/интеграции.
+Корректный повтор до использования возвращает тот же токен; после использования
+токен не выдаётся снова. Назначенную визуальную задачу нельзя пропустить через
+обычный маршрут. Состояние переживает перезапуск и удаляется с родительской задачей.

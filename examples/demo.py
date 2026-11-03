@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INTEGRATION = os.environ['GATEVERIQ_ID']
 SECRET = os.environ['GATEVERIQ_SECRET']
+WEBSITE = os.environ.get('GATEVERIQ_WEBSITE') == '1'
 OPERATIONS = {}
 LOCK = threading.Lock()
 
@@ -61,8 +62,13 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b'{}')
             if self.path == '/prepare':
                 operation = secrets.token_urlsafe(32)
-                challenge = api('/internal/v1/challenges', {
-                    'integration_id': INTEGRATION, 'action': 'demo', 'context_id': operation}, True)
+                if WEBSITE:
+                    prepared = api('/internal/v1/web/attempts', {
+                        'integration_id': INTEGRATION, 'action': 'demo', 'context_id': operation,
+                        'account_id': 'local-demo-account', 'origin': 'http://127.0.0.1:8090'}, True)
+                else:
+                    prepared = {'challenge': api('/internal/v1/challenges', {
+                        'integration_id': INTEGRATION, 'action': 'demo', 'context_id': operation}, True)}
                 with LOCK:
                     now = time.time()
                     for key in list(OPERATIONS):
@@ -71,8 +77,8 @@ class Handler(BaseHTTPRequestHandler):
                     if len(OPERATIONS) >= 100:
                         self.send(429, {'error': 'Demo operation limit'})
                         return
-                    OPERATIONS[operation] = {'expires': now + 300, 'request_id': secrets.token_urlsafe(32), 'done': False}
-                self.send(200, {'operation_id': operation, 'challenge': challenge})
+                    OPERATIONS[operation] = {'expires': now + 300, 'request_id': secrets.token_urlsafe(32), 'done': False, 'failed_login': data.get('failed_login') is True}
+                self.send(200, {'operation_id': operation, 'website': WEBSITE, **prepared})
             elif self.path == '/public/v1/solutions':
                 self.send(200, api(self.path, data))
             elif self.path == '/complete':
@@ -88,8 +94,13 @@ class Handler(BaseHTTPRequestHandler):
                     api('/internal/v1/verifications/consume', {
                         'integration_id': INTEGRATION, 'action': 'demo', 'context_id': operation,
                         'request_id': record['request_id'], 'verification_token': data['verification_token']}, True)
+                    if WEBSITE:
+                        api('/internal/v1/web/outcomes', {
+                            'integration_id': INTEGRATION, 'action': 'demo', 'context_id': operation,
+                            'request_id': record['request_id'], 'success': not record['failed_login']}, True)
                     record['done'] = True
-                self.send(200, {'message': 'Verified: demo operation completed'})
+                self.send(200, {'message': 'Verification passed; simulated password was incorrect'
+                               if WEBSITE and record['failed_login'] else 'Verified: demo operation completed'})
             else:
                 self.send(404, {'error': 'Not found'})
         except urllib.error.HTTPError as error:

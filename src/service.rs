@@ -28,6 +28,8 @@ pub fn now() -> i64 {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub website: crate::website::WebsitePolicy,
     pub database: String,
     pub token_key_file: String,
     pub public_listen: SocketAddr,
@@ -41,7 +43,8 @@ pub struct Config {
 }
 impl Config {
     pub fn validate(&self) -> Result<(), String> {
-        if !(1..=24).contains(&self.difficulty_bits)
+        if !self.website.valid()
+            || !(1..=24).contains(&self.difficulty_bits)
             || !(10..=600).contains(&self.challenge_ttl_seconds)
             || !(10..=300).contains(&self.token_ttl_seconds)
             || !(300..=86400).contains(&self.retention_seconds)
@@ -60,7 +63,7 @@ pub struct App {
     key: Vec<u8>,
     limits: Mutex<HashMap<String, (i64, u32)>>,
 }
-type Shared = Arc<App>;
+pub type Shared = Arc<App>;
 #[derive(Debug)]
 pub struct Error(pub StatusCode, pub &'static str);
 impl IntoResponse for Error {
@@ -68,10 +71,10 @@ impl IntoResponse for Error {
         (self.0,Json(json!({"error":{"code":self.1,"retryable": self.0 == StatusCode::TOO_MANY_REQUESTS || self.0 == StatusCode::SERVICE_UNAVAILABLE}}))).into_response()
     }
 }
-fn bad(code: &'static str) -> Error {
+pub(crate) fn bad(code: &'static str) -> Error {
     Error(StatusCode::BAD_REQUEST, code)
 }
-fn db_error(_: rusqlite::Error) -> Error {
+pub(crate) fn db_error(_: rusqlite::Error) -> Error {
     Error(StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE")
 }
 impl App {
@@ -86,16 +89,31 @@ impl App {
         CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY);
         INSERT OR IGNORE INTO schema_migrations VALUES(1);
         CREATE TABLE IF NOT EXISTS integrations(id TEXT PRIMARY KEY,name TEXT NOT NULL,secret_hash TEXT NOT NULL, previous_hash TEXT, previous_until INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS history_policies(integration_id TEXT PRIMARY KEY REFERENCES integrations(id));
+        CREATE TABLE IF NOT EXISTS attempt_history(integration_id TEXT NOT NULL REFERENCES integrations(id),source TEXT NOT NULL,minute INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,failures INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(integration_id,source,minute));
+        CREATE INDEX IF NOT EXISTS attempt_history_expiry ON attempt_history(minute);
+        CREATE TABLE IF NOT EXISTS behavior_policies(integration_id TEXT PRIMARY KEY REFERENCES integrations(id));
+        CREATE TABLE IF NOT EXISTS browser_policies(integration_id TEXT PRIMARY KEY REFERENCES integrations(id));
         CREATE TABLE IF NOT EXISTS actions(integration_id TEXT NOT NULL REFERENCES integrations(id),action TEXT NOT NULL, PRIMARY KEY(integration_id,action));
         CREATE TABLE IF NOT EXISTS challenges(id TEXT PRIMARY KEY,integration_id TEXT NOT NULL REFERENCES integrations(id),action TEXT NOT NULL,context TEXT NOT NULL,salt TEXT NOT NULL,difficulty INTEGER NOT NULL,expires INTEGER NOT NULL,solved_at INTEGER,token_hash TEXT UNIQUE,token_expires INTEGER,consumed_at INTEGER,request_id TEXT, UNIQUE(integration_id,action,context));
         CREATE INDEX IF NOT EXISTS challenge_expiry ON challenges(expires);
         CREATE INDEX IF NOT EXISTS challenge_integration ON challenges(integration_id,expires);")?;
+        crate::website::migrate(&db)?;
+        crate::visual::migrate(&db)?;
         Ok(Arc::new(Self {
             db: Mutex::new(db),
             config,
             key,
             limits: Mutex::new(HashMap::new()),
         }))
+    }
+    pub(crate) fn pseudonym(&self, domain: &[u8], integration: &str, value: &str) -> String {
+        let mut h = Hmac::<Sha256>::new_from_slice(&self.key).unwrap();
+        h.update(domain);
+        h.update(integration.as_bytes());
+        h.update(&[0]);
+        h.update(value.as_bytes());
+        B64.encode(h.finalize().into_bytes())
     }
     fn token(&self, id: &str) -> String {
         let mut h = Hmac::<Sha256>::new_from_slice(&self.key).unwrap();
@@ -129,7 +147,7 @@ impl App {
         tx.commit()?;
         Ok((id, secret))
     }
-    fn auth(&self, headers: &HeaderMap, id: &str) -> Result<(), Error> {
+    pub(crate) fn auth(&self, headers: &HeaderMap, id: &str) -> Result<(), Error> {
         let token = headers
             .get("authorization")
             .and_then(|h| h.to_str().ok())
@@ -148,7 +166,7 @@ impl App {
             Err(Error(StatusCode::UNAUTHORIZED, "UNAUTHORIZED"))
         }
     }
-    fn limit(&self, key: String) -> Result<(), Error> {
+    pub(crate) fn limit(&self, key: String) -> Result<(), Error> {
         let t = now() / 60;
         let mut limits = self.limits.lock().unwrap();
         limits.retain(|_, v| v.0 == t);
@@ -163,6 +181,8 @@ impl App {
         Ok(())
     }
     pub fn cleanup(&self) -> Result<usize, rusqlite::Error> {
+        crate::website::cleanup(self)?;
+        self.db.lock().unwrap().execute("DELETE FROM attempt_history WHERE rowid IN (SELECT rowid FROM attempt_history WHERE minute < ?1 LIMIT 500)", [now() / 60 - self.config.website.history_retention_seconds / 60])?;
         self.db.lock().unwrap().execute("DELETE FROM challenges WHERE id IN (SELECT id FROM challenges WHERE MAX(expires,COALESCE(token_expires,0),COALESCE(consumed_at,0)) < ?1 LIMIT 500)",[now()-self.config.retention_seconds])
     }
 }
@@ -181,9 +201,44 @@ pub struct Prepare {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct BrowserSignals {
+    pub webdriver: bool,
+    pub cookies_enabled: bool,
+    pub languages_count: u8,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BehaviorSignals {
+    pub challenge_id: String,
+    pub elapsed_ms: u32,
+    pub activation_ms: u32,
+    pub trusted_activations: u16,
+    pub pointer_events: u16,
+    pub keyboard_events: u16,
+    pub focus_changes: u16,
+}
+impl BehaviorSignals {
+    fn acceptable(&self, challenge_id: &str, ttl_ms: u32) -> bool {
+        self.challenge_id == challenge_id
+            && self.elapsed_ms >= 300
+            && self.elapsed_ms <= ttl_ms
+            && self.activation_ms >= 300
+            && self.activation_ms <= self.elapsed_ms
+            && (1..=20).contains(&self.trusted_activations)
+            && self.pointer_events <= 4096
+            && self.keyboard_events <= 4096
+            && self.focus_changes <= 4096
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Solution {
     pub challenge_id: String,
     pub nonce: String,
+    #[serde(default)]
+    pub browser: Option<BrowserSignals>,
+    #[serde(default)]
+    pub behavior: Option<BehaviorSignals>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -251,6 +306,13 @@ pub fn prepare(app: &Shared, headers: &HeaderMap, p: Prepare) -> Result<Challeng
     Ok(c)
 }
 pub fn solution(app: &Shared, p: Solution) -> Result<Value, Error> {
+    solution_with_origin(app, p, None)
+}
+pub(crate) fn solution_with_origin(
+    app: &Shared,
+    p: Solution,
+    origin: Option<&str>,
+) -> Result<Value, Error> {
     if core::decode(&p.challenge_id, 32).is_none() || core::decode(&p.nonce, 8).is_none() {
         return Err(bad("INVALID_REQUEST"));
     }
@@ -265,6 +327,35 @@ pub fn solution(app: &Shared, p: Solution) -> Result<Value, Error> {
         .optional()
         .map_err(db_error)?
         .ok_or(bad("CHALLENGE_NOT_FOUND"))?;
+    crate::website::gate(&tx, app, &c.challenge_id, origin)?;
+    let browser_required: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM browser_policies p JOIN challenges c ON c.integration_id=p.integration_id WHERE c.id=?1)",
+        [&c.challenge_id], |r| r.get(0)).map_err(db_error)?;
+    let visual_passed = crate::visual::passed(&tx, &c.challenge_id)?;
+    if browser_required && !visual_passed {
+        let signals = p
+            .browser
+            .as_ref()
+            .ok_or(Error(StatusCode::FORBIDDEN, "BROWSER_SIGNALS_REQUIRED"))?;
+        if signals.webdriver || !signals.cookies_enabled || signals.languages_count == 0 {
+            return Err(Error(StatusCode::FORBIDDEN, "AUTOMATION_SUSPECTED"));
+        }
+    }
+    let behavior_required: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM behavior_policies p JOIN challenges c ON c.integration_id=p.integration_id WHERE c.id=?1)",
+        [&c.challenge_id], |r| r.get(0)).map_err(db_error)?;
+    if behavior_required && !visual_passed {
+        let signals = p
+            .behavior
+            .as_ref()
+            .ok_or(Error(StatusCode::FORBIDDEN, "BEHAVIOR_SIGNALS_REQUIRED"))?;
+        if !signals.acceptable(
+            &c.challenge_id,
+            app.config.challenge_ttl_seconds as u32 * 1000,
+        ) {
+            return Err(Error(StatusCode::FORBIDDEN, "BEHAVIOR_REJECTED"));
+        }
+    }
     let (solved, expires, consumed): (Option<i64>, Option<i64>, Option<i64>) = tx
         .query_row(
             "SELECT solved_at,token_expires,consumed_at FROM challenges WHERE id=?1",
@@ -343,6 +434,59 @@ pub fn consume(app: &Shared, headers: &HeaderMap, p: Consume) -> Result<Value, E
     tx.commit().map_err(db_error)?;
     Ok(json!({"valid":true,"action":action,"context_id":context}))
 }
+/// Evaluate persistent per-integration / transport-source history before issuing tokens.
+/// Forwarded headers and client-supplied addresses are deliberately not trusted.
+pub fn solution_from(app: &Shared, source: std::net::IpAddr, p: Solution) -> Result<Value, Error> {
+    solution_from_origin(app, source, p, None)
+}
+pub(crate) fn solution_from_origin(
+    app: &Shared,
+    source: std::net::IpAddr,
+    p: Solution,
+    origin: Option<&str>,
+) -> Result<Value, Error> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(&app.key).unwrap();
+    mac.update(b"gateveriq:source:v1:");
+    mac.update(source.to_canonical().to_string().as_bytes());
+    let source_key = B64.encode(mac.finalize().into_bytes());
+    let minute = now() / 60;
+    let integration: Option<String> = {
+        let mut db = app.db.lock().unwrap();
+        let tx = db.transaction().map_err(db_error)?;
+        let integration: Option<String> = tx.query_row(
+            "SELECT c.integration_id FROM challenges c JOIN history_policies p ON p.integration_id=c.integration_id WHERE c.id=?1",
+            [&p.challenge_id], |r| r.get(0)).optional().map_err(db_error)?;
+        if let Some(id) = integration.as_ref() {
+            let (attempts, failures): (i64, i64) = tx.query_row(
+                "SELECT COALESCE(SUM(CASE WHEN minute=?3 THEN attempts ELSE 0 END),0),COALESCE(SUM(failures),0) FROM attempt_history WHERE integration_id=?1 AND source=?2 AND minute BETWEEN ?3-9 AND ?3",
+                params![id, source_key, minute], |r| Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
+            if failures >= i64::from(app.config.website.failure_limit) {
+                return Err(Error(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "ATTEMPT_HISTORY_BLOCKED",
+                ));
+            }
+            if attempts >= i64::from(app.config.website.attempts_per_minute) {
+                return Err(Error(StatusCode::TOO_MANY_REQUESTS, "ATTEMPT_RATE_LIMITED"));
+            }
+            // Reserve before verification so concurrent requests cannot bypass the limit.
+            tx.execute("INSERT INTO attempt_history(integration_id,source,minute,attempts) VALUES(?1,?2,?3,1) ON CONFLICT(integration_id,source,minute) DO UPDATE SET attempts=attempts+1",
+                params![id, source_key, minute]).map_err(db_error)?;
+        }
+        tx.commit().map_err(db_error)?;
+        integration
+    };
+    let result = solution_with_origin(app, p, origin);
+    if let (Some(id), Err(error)) = (integration, &result) {
+        // Count client verification failures, never infrastructure errors.
+        if error.0.is_client_error() && error.0 != StatusCode::TOO_MANY_REQUESTS {
+            app.db.lock().unwrap().execute(
+                "UPDATE attempt_history SET failures=failures+1 WHERE integration_id=?1 AND source=?2 AND minute=?3",
+                params![id, source_key, minute]).map_err(db_error)?;
+        }
+    }
+    result
+}
 async fn issue(
     State(a): State<Shared>,
     ConnectInfo(ip): ConnectInfo<SocketAddr>,
@@ -359,7 +503,7 @@ async fn submit(
 ) -> Result<Json<Value>, Error> {
     a.limit(format!("ip:{}", ip.ip()))?;
     a.limit(format!("challenge:{}", p.challenge_id))?;
-    solution(&a, p).map(Json)
+    solution_from(&a, ip.ip(), p).map(Json)
 }
 async fn check(
     State(a): State<Shared>,
@@ -398,8 +542,11 @@ pub fn routers(a: Shared) -> (Router, Router) {
         .route("/internal/v1/challenges", post(issue))
         .route("/internal/v1/verifications/consume", post(check))
         .layer(DefaultBodyLimit::max(4096))
-        .with_state(a);
-    (public, internal)
+        .with_state(a.clone());
+    (
+        crate::website::public_routes(public, a.clone()),
+        crate::website::internal_routes(internal, a),
+    )
 }
 pub async fn serve(a: Shared) -> Result<(), Box<dyn std::error::Error>> {
     let public = tokio::net::TcpListener::bind(a.config.public_listen).await?;

@@ -1,5 +1,10 @@
 # Integration guide
 
+[English](integration-guide.md) | [Русский](ru/integration-guide.md)
+
+This guide covers the original PoW operation flow. For account-bound website login,
+CORS and visual verification, use [website integration](website-integration.md).
+
 ## Backend contract
 
 1. Apply your own request and business limits.
@@ -17,7 +22,7 @@ Never send your integration secret to clients. A public integration ID alone doe
 
 ## Browser widget
 
-Reverse proxy the public API and assets under your application's origin. For example, `/gateveriq/widget.js`, `/gateveriq/worker.js` and `/gateveriq/public/v1/solutions` should strip `/gateveriq` upstream. Cross-origin integration is not enabled by the service.
+Reverse proxy the public API and assets under your application's origin. For example, `/gateveriq/widget.js`, `/gateveriq/worker.js` and `/gateveriq/public/v1/solutions` should strip `/gateveriq` upstream. The original solution route has no CORS. Website mode supports cross-origin solution submission; see [website integration](website-integration.md).
 
 ```html
 <div id="verification"></div>

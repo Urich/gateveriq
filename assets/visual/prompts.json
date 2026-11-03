@@ -1,0 +1,36 @@
+{
+  "generator": "Built-in image_gen tool",
+  "layout": "2x2 atlas, four variants per category; split locally at runtime",
+  "assets": [
+    {
+      "file": "cats.png",
+      "subject": "cat",
+      "prompt": "Use case: illustration-story. Asset type: a single 2 by 2 sprite atlas for a self-hosted image matching challenge. Exactly four equal square panels in a precise 2x2 grid with no gutters, no borders and no text. Each panel contains one clearly recognizable cat, each a different appearance or viewing angle, fully visible, centered with generous margin, filling about 65 percent of its panel. All four panels show only this same category (cat); do not add other animals, vehicles or plants. Premium friendly editorial illustration, hand-painted gouache texture, soft dimensional shading, clean confident shapes, natural colors, sophisticated muted warm ivory backgrounds identical across all panels. Beautiful polished app illustration, no letters, no labels, no watermarks, no logo. Square atlas composition, exact panel divisions at center."
+    },
+    {
+      "file": "dogs.png",
+      "subject": "dog",
+      "prompt": "Use case: illustration-story. Asset type: a single 2 by 2 sprite atlas for a self-hosted image matching challenge. Exactly four equal square panels in a precise 2x2 grid with no gutters, no borders and no text. Each panel contains one clearly recognizable dog, each a different appearance or viewing angle, fully visible, centered with generous margin, filling about 65 percent of its panel. All four panels show only this same category (dog); do not add other animals, vehicles or plants. Premium friendly editorial illustration, hand-painted gouache texture, soft dimensional shading, clean confident shapes, natural colors, sophisticated muted warm ivory backgrounds identical across all panels. Beautiful polished app illustration, no letters, no labels, no watermarks, no logo. Square atlas composition, exact panel divisions at center."
+    },
+    {
+      "file": "bicycles.png",
+      "subject": "bicycle",
+      "prompt": "Use case: illustration-story. Asset type: a single 2 by 2 sprite atlas for a self-hosted image matching challenge. Exactly four equal square panels in a precise 2x2 grid with no gutters, no borders and no text. Each panel contains one clearly recognizable bicycle, each a different appearance or viewing angle, fully visible, centered with generous margin, filling about 65 percent of its panel. All four panels show only this same category (bicycle); do not add other animals, vehicles or plants. Premium friendly editorial illustration, hand-painted gouache texture, soft dimensional shading, clean confident shapes, natural colors, sophisticated muted warm ivory backgrounds identical across all panels. Beautiful polished app illustration, no letters, no labels, no watermarks, no logo. Square atlas composition, exact panel divisions at center."
+    },
+    {
+      "file": "cars.png",
+      "subject": "car",
+      "prompt": "Use case: illustration-story. Asset type: a single 2 by 2 sprite atlas for a self-hosted image matching challenge. Exactly four equal square panels in a precise 2x2 grid with no gutters, no borders and no text. Each panel contains one clearly recognizable car, each a different appearance or viewing angle, fully visible, centered with generous margin, filling about 65 percent of its panel. All four panels show only this same category (car); do not add other animals, vehicles or plants. Premium friendly editorial illustration, hand-painted gouache texture, soft dimensional shading, clean confident shapes, natural colors, sophisticated muted warm ivory backgrounds identical across all panels. Beautiful polished app illustration, no letters, no labels, no watermarks, no logo. Square atlas composition, exact panel divisions at center."
+    },
+    {
+      "file": "flowers.png",
+      "subject": "potted flowering plant",
+      "prompt": "Use case: illustration-story. Asset type: a single 2 by 2 sprite atlas for a self-hosted image matching challenge. Exactly four equal square panels in a precise 2x2 grid with no gutters, no borders and no text. Each panel contains one clearly recognizable potted flowering plant, each a different appearance or viewing angle, fully visible, centered with generous margin, filling about 65 percent of its panel. All four panels show only this same category (potted flowering plant); do not add other animals, vehicles or plants. Premium friendly editorial illustration, hand-painted gouache texture, soft dimensional shading, clean confident shapes, natural colors, sophisticated muted warm ivory backgrounds identical across all panels. Beautiful polished app illustration, no letters, no labels, no watermarks, no logo. Square atlas composition, exact panel divisions at center."
+    },
+    {
+      "file": "trees.png",
+      "subject": "tree",
+      "prompt": "Use case: illustration-story. Asset type: a single 2 by 2 sprite atlas for a self-hosted image matching challenge. Exactly four equal square panels in a precise 2x2 grid with no gutters, no borders and no text. Each panel contains one clearly recognizable tree, each a different appearance or viewing angle, fully visible, centered with generous margin, filling about 65 percent of its panel. All four panels show only this same category (tree); do not add other animals, vehicles or plants. Premium friendly editorial illustration, hand-painted gouache texture, soft dimensional shading, clean confident shapes, natural colors, sophisticated muted warm ivory backgrounds identical across all panels. Beautiful polished app illustration, no letters, no labels, no watermarks, no logo. Square atlas composition, exact panel divisions at center."
+    }
+  ]
+}

@@ -20,5 +20,6 @@ tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 
 [dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
