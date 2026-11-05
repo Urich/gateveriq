@@ -5,9 +5,11 @@ export function collectBehavior(element, challenge, signal) {
     const started = performance.now();
     const data = {challenge_id: challenge.challenge_id, elapsed_ms: 0, activation_ms: 0,
       trusted_activations: 0, pointer_events: 0, keyboard_events: 0, focus_changes: 0};
-    const button = document.createElement('button');
-    button.type = 'button'; button.textContent = 'Confirm verification';
-    element.replaceChildren(button);
+    const label = document.createElement('label');
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    label.append(checkbox, ' Verify this request');
+    element.replaceChildren(label);
     const count = field => event => {
       if (event.isTrusted) data[field] = Math.min(4096, data[field] + 1);
     };
@@ -22,19 +24,22 @@ export function collectBehavior(element, challenge, signal) {
       element.removeEventListener('pointerdown', pointer);
       element.removeEventListener('keydown', keyboard);
       element.removeEventListener('focusin', focus);
-      button.removeEventListener('click', activate);
+      checkbox.removeEventListener('change', activate);
       signal.removeEventListener('abort', abort);
-      button.remove();
+      label.remove();
     };
     const abort = () => { cleanup(); reject(new Error('Cancelled')); };
     const activate = event => {
       const elapsed = Math.floor(performance.now() - started);
-      // Native button activation supports mouse, touch, keyboard and assistive tools.
-      if (!event.isTrusted || elapsed < 300) return;
+      if (!checkbox.checked) return;
+      if (!event.isTrusted || elapsed < 300) {
+        checkbox.checked = false;
+        return;
+      }
       data.activation_ms = elapsed; data.elapsed_ms = elapsed; data.trusted_activations = 1;
       cleanup(); resolve(data);
     };
-    button.addEventListener('click', activate);
+    checkbox.addEventListener('change', activate);
     const remaining = Math.max(0, Math.min(600000, challenge.expires_at * 1000 - Date.now()));
     const timer = setTimeout(() => { cleanup(); reject(new Error('Challenge expired')); }, remaining);
     signal.addEventListener('abort', abort, {once: true});
@@ -79,9 +84,12 @@ export class GateveriqWidget {
 }
 
 /** Use an attempt prepared by your backend, never an integration secret. */
-export async function verifyWebsiteAttempt(element, attempt, {serviceURL, signal} = {}) {
+export async function verifyWebsiteAttempt(element, attempt, {serviceURL, signal = new AbortController().signal} = {}) {
   if (attempt.decision === 'additional_verification_required') {
-    if (attempt.visual && attempt.challenge) return verifyVisual(element, attempt.challenge, attempt.visual, {serviceURL, signal});
+    if (attempt.visual && attempt.challenge) {
+      await collectBehavior(element, attempt.challenge, signal);
+      return verifyVisual(element, attempt.challenge, attempt.visual, {serviceURL, signal});
+    }
     return {decision: attempt.decision};
   }
   if (attempt.decision !== 'verify' || !attempt.challenge) throw Error('Invalid website attempt');
