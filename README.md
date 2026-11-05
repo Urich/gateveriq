@@ -14,6 +14,10 @@ the small illustration bank can be memorized by bots. See [security](docs/securi
 
 ## Requirements
 
+For Docker images and prebuilt Ubuntu 24.04 binaries, see
+[Docker and releases](docs/releases.md). Build and start locally with
+`docker compose up --build -d --wait`.
+
 - Stable Rust and Cargo (edition 2021), with a C compiler for bundled SQLite.
 - A modern browser supporting modules, Workers, Web Crypto and BigInt.
 - HTTPS or localhost for browser testing.
@@ -123,5 +127,5 @@ python tests/e2e.py
 ```
 
 Use `python3` where needed. On Windows stop the debug server before rebuilding it,
-or use a separate target directory as described in testing. No release publishing
-workflow or open-source license is currently configured.
+or use a separate target directory as described in testing. Release publishing is
+configured in `.github/workflows/release.yml`. No open-source license is currently configured.

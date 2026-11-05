@@ -1,0 +1,22 @@
+[Unit]
+Description=Gateveriq verification service
+After=network.target
+
+[Service]
+User=gateveriq
+Group=gateveriq
+WorkingDirectory=/var/lib/gateveriq
+ExecStart=/usr/local/bin/gateveriq --config /var/lib/gateveriq/config.toml serve
+Restart=on-failure
+RestartSec=5
+UMask=0077
+StateDirectory=gateveriq
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/gateveriq
+
+[Install]
+WantedBy=multi-user.target

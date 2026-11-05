@@ -1,0 +1,76 @@
+name: Release Ubuntu 24.04
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.93.0'
+      - name: Validate release version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          test "$GITHUB_REF_NAME" = "v$version"
+      - run: cargo test --locked
+      - run: bash scripts/build-release.sh
+      - run: GATEVERIQ_BINARY="$PWD/target/x86_64-unknown-linux-gnu/release/gateveriq" python3 tests/e2e.py
+      - name: Test Docker lifecycle
+        env:
+          GATEVERIQ_IMAGE: gateveriq:ci
+        run: |
+          docker compose up --build -d --wait
+          curl --fail --retry 10 --retry-delay 2 --retry-connrefused http://127.0.0.1:9080/health
+          docker compose exec -T gateveriq gateveriq --config /data/config.toml integration-create --name smoke --actions test > /tmp/integration.json
+          docker compose exec -T gateveriq sha256sum /data/token.key /data/config.toml > /tmp/state-before
+          docker compose down
+          docker compose up -d --wait
+          docker compose exec -T gateveriq sha256sum /data/token.key /data/config.toml > /tmp/state-after
+          diff /tmp/state-before /tmp/state-after
+          id=$(python3 -c 'import json; print(json.load(open("/tmp/integration.json"))["integration_id"])')
+          docker compose exec -T gateveriq gateveriq --config /data/config.toml integration-disable --id "$id"
+          curl --fail --retry 10 --retry-delay 2 --retry-connrefused http://127.0.0.1:9080/health
+          docker compose down
+      - name: Test Ubuntu installer and upgrade
+        run: |
+          mkdir /tmp/release-test
+          tar -xzf dist/*.tar.gz -C /tmp/release-test
+          cd /tmp/release-test/gateveriq-*
+          sudo bash scripts/install.sh
+          curl --fail --retry 10 --retry-delay 2 --retry-connrefused http://127.0.0.1:9080/health
+          sudo sha256sum /var/lib/gateveriq/token.key /var/lib/gateveriq/config.toml > /tmp/install-before
+          sudo bash scripts/install.sh
+          sudo sha256sum /var/lib/gateveriq/token.key /var/lib/gateveriq/config.toml > /tmp/install-after
+          diff /tmp/install-before /tmp/install-after
+          sudo systemctl stop gateveriq
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-24.04-amd64
+          path: dist/*
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish Docker image
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker tag gateveriq:ci "$image:$GITHUB_REF_NAME"
+          docker push "$image:$GITHUB_REF_NAME"
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "Gateveriq $GITHUB_REF_NAME"

@@ -1,5 +1,7 @@
 # Deployment and configuration
 
+For Docker, Ubuntu 24.04 packages and systemd installation, see [releases](releases.md).
+
 [English](deployment.md) | [Русский](ru/deployment.md)
 
 ## Initialization
@@ -105,5 +107,5 @@ purge outstanding challenges, securely replace the key and require new operation
 
 `GET /health` returns `ok` for liveness, not database readiness. Cleanup failures
 are written to stderr. Metrics, audit dashboards, graceful draining, clustering
-and a production service installer remain outside this prototype. Keep clocks
-synchronized and monitor disk/CPU usage. No binaries or releases are published automatically.
+remain outside this prototype. Keep clocks synchronized and monitor disk/CPU usage.
+Version tags trigger the tested Ubuntu/Docker release workflow.
