@@ -355,35 +355,7 @@ pub(crate) fn solution_with_origin(
         .optional()
         .map_err(db_error)?
         .ok_or(bad("CHALLENGE_NOT_FOUND"))?;
-    crate::website::gate(&tx, app, &c.challenge_id, origin)?;
-    let browser_required: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM browser_policies p JOIN challenges c ON c.integration_id=p.integration_id WHERE c.id=?1)",
-        [&c.challenge_id], |r| r.get(0)).map_err(db_error)?;
-    let visual_passed = crate::visual::passed(&tx, &c.challenge_id)?;
-    if browser_required && !visual_passed {
-        let signals = p
-            .browser
-            .as_ref()
-            .ok_or(Error(StatusCode::FORBIDDEN, "BROWSER_SIGNALS_REQUIRED"))?;
-        if signals.webdriver || !signals.cookies_enabled || signals.languages_count == 0 {
-            return Err(Error(StatusCode::FORBIDDEN, "AUTOMATION_SUSPECTED"));
-        }
-    }
-    let behavior_required: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM behavior_policies p JOIN challenges c ON c.integration_id=p.integration_id WHERE c.id=?1)",
-        [&c.challenge_id], |r| r.get(0)).map_err(db_error)?;
-    if behavior_required && !visual_passed {
-        let signals = p
-            .behavior
-            .as_ref()
-            .ok_or(Error(StatusCode::FORBIDDEN, "BEHAVIOR_SIGNALS_REQUIRED"))?;
-        if !signals.acceptable(
-            &c.challenge_id,
-            app.config.challenge_ttl_seconds as u32 * 1000,
-        ) {
-            return Err(Error(StatusCode::FORBIDDEN, "BEHAVIOR_REJECTED"));
-        }
-    }
+    // Validate the attempt before offering any fallback challenge.
     let (solved, expires, consumed): (Option<i64>, Option<i64>, Option<i64>) = tx
         .query_row(
             "SELECT solved_at,token_expires,consumed_at FROM challenges WHERE id=?1",
@@ -395,11 +367,44 @@ pub(crate) fn solution_with_origin(
     if c.expires_at <= t {
         return Err(bad("CHALLENGE_EXPIRED"));
     }
+    if consumed.is_some() {
+        return Err(bad("INVALID_TOKEN"));
+    }
     if !core::verify(&c, &p.nonce) {
         return Err(bad("INVALID_SOLUTION"));
     }
-    if consumed.is_some() {
-        return Err(bad("INVALID_TOKEN"));
+    crate::website::gate(&tx, app, &c.challenge_id, origin)?;
+    let browser_required: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM browser_policies p JOIN challenges c ON c.integration_id=p.integration_id WHERE c.id=?1)",
+        [&c.challenge_id], |r| r.get(0)).map_err(db_error)?;
+    let visual_passed = crate::visual::passed(&tx, &c.challenge_id)?;
+    let website = crate::website::binding(&tx, &c.challenge_id, origin)?.is_some();
+    if website && !visual_passed {
+        crate::website::assess_interaction(&p, app.config.challenge_ttl_seconds as u32 * 1000)?;
+    }
+    if browser_required && !visual_passed && !website {
+        let signals = p
+            .browser
+            .as_ref()
+            .ok_or(Error(StatusCode::FORBIDDEN, "BROWSER_SIGNALS_REQUIRED"))?;
+        if signals.webdriver || !signals.cookies_enabled || signals.languages_count == 0 {
+            return Err(Error(StatusCode::FORBIDDEN, "AUTOMATION_SUSPECTED"));
+        }
+    }
+    let behavior_required: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM behavior_policies p JOIN challenges c ON c.integration_id=p.integration_id WHERE c.id=?1)",
+        [&c.challenge_id], |r| r.get(0)).map_err(db_error)?;
+    if behavior_required && !visual_passed && !website {
+        let signals = p
+            .behavior
+            .as_ref()
+            .ok_or(Error(StatusCode::FORBIDDEN, "BEHAVIOR_SIGNALS_REQUIRED"))?;
+        if !signals.acceptable(
+            &c.challenge_id,
+            app.config.challenge_ttl_seconds as u32 * 1000,
+        ) {
+            return Err(Error(StatusCode::FORBIDDEN, "BEHAVIOR_REJECTED"));
+        }
     }
     let token = app.token(&c.challenge_id);
     let expiry = expires.unwrap_or(t + app.config.token_ttl_seconds);
@@ -515,7 +520,10 @@ pub(crate) fn solution_from_origin(
     let result = solution_with_origin(app, p, origin);
     if let (Some(id), Err(error)) = (integration, &result) {
         // Count client verification failures, never infrastructure errors.
-        if error.0.is_client_error() && error.0 != StatusCode::TOO_MANY_REQUESTS {
+        if error.0.is_client_error()
+            && error.0 != StatusCode::TOO_MANY_REQUESTS
+            && error.1 != "ADDITIONAL_VERIFICATION_REQUIRED"
+        {
             app.db.lock().unwrap().execute(
                 "UPDATE attempt_history SET failures=failures+1 WHERE integration_id=?1 AND source=?2 AND minute=?3",
                 params![id, source_key, minute]).map_err(db_error)?;

@@ -24,7 +24,7 @@ const failing = new GateveriqClient({fetchImpl: async () => ({ok: false, status:
   json: async () => ({error: {code: 'UNAUTHORIZED'}})})});
 await assert.rejects(failing.prepareLogin({}), error => error.code === 'UNAUTHORIZED');
 
-const scope = {};
+const scope = {AbortController};
 runInNewContext(readFileSync(new URL('../web/widget.js', import.meta.url), 'utf8')
   .replace(/^const workerURL.*$/m, '').replaceAll('export ', ''), scope);
 const result = await scope.verifyWebsiteAttempt(null, {decision: 'additional_verification_required'});

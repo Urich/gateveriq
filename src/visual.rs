@@ -72,6 +72,7 @@ fn new_task(expires: i64, previous_reference: Option<&str>, remaining: u32) -> (
         .map(|(kind, variant)| &bank[*kind][*variant])
         .collect();
     let payload = json!({"task_id":task_id,"expires_at":expires,
+            "instruction_key":"match_reference",
             "instruction":"Select all illustrations showing the same type of object as the reference. Colors and poses may differ.",
             "reference":reference,"images":images,"max_attempts":remaining});
     (payload, answer)

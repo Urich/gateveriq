@@ -102,6 +102,17 @@ Missing reports return 403 BEHAVIOR_SIGNALS_REQUIRED; inconsistent reports retur
 403 BEHAVIOR_REJECTED. Real challenge expiration and proof validity are checked
 independently. The report is untrusted input and is not proof of human presence.
 
+Website attempts use adaptive screening instead of the legacy 300 ms minimum.
+Webdriver or an untrusted activation requires an additional visual task. Otherwise,
+two weak signals (disabled cookies, no languages, activation below 300 ms, or no
+pointer/keyboard/focus events) require a task; one alone is allowed. Missing reports
+also require a task. Unbound reports, inconsistent timing and out-of-range counters
+return INVALID_REQUEST. History and account policies still apply; a pending visual
+task cannot be bypassed by resubmitting better signals. Requesting an additional
+task does not count as a failed verification. Proof validity, expiry and consumption
+are checked before interaction screening. These initial rules need calibration
+against actual traffic; client reports remain forgeable.
+
 ### Persistent history policy
 
 `--history-check` enables persistent per-integration, per-transport-peer history

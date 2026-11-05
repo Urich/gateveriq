@@ -269,3 +269,21 @@ so an expired operation cannot be recreated with the same context. This compact
 ledger grows with operations and has no automatic pruning. Existing contexts
 already deleted before upgrading cannot be recovered. Generate random contexts.
 Do not downgrade the binary against this schema; restore a pre-upgrade backup.
+
+## Visual challenge locale
+
+Pass the application language as an option:
+
+```js
+await verifyWebsiteAttempt(element, attempt, {serviceURL, locale: 'ru-RU'});
+```
+
+Supported languages are `en` and `ru`, including regional variants. Without an
+explicit locale, selection uses the closest element/ancestor `lang`, page language,
+then the first supported browser preference (`navigator.languages`, `navigator.language`).
+An unsupported explicit or page language falls back to English. The selected language
+is kept throughout retries. `verifyVisual` accepts the same locale option.
+The visual instruction, labels, confirmation, loading, retry and error messages are
+translated. The server instruction key `match_reference` selects the translation;
+the legacy standard English instruction is also recognized. Custom server instructions
+are preserved verbatim and must be translated by their author.

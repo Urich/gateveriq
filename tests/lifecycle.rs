@@ -617,6 +617,15 @@ async fn web_submit(
     origin: Option<&str>,
     path: &str,
 ) -> (StatusCode, serde_json::Value) {
+    web_submit_report(a, c, origin, path, None).await
+}
+async fn web_submit_report(
+    a: std::sync::Arc<App>,
+    c: &core::Challenge,
+    origin: Option<&str>,
+    path: &str,
+    report: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
     use axum::{
         body::{to_bytes, Body},
         extract::ConnectInfo,
@@ -634,9 +643,9 @@ async fn web_submit(
     if let Some(origin) = origin {
         req = req.header("origin", origin);
     }
-    let body = serde_json::json!({"challenge_id":c.challenge_id,"nonce":core::solve(c).unwrap(),
+    let body = report.unwrap_or_else(|| serde_json::json!({"challenge_id":c.challenge_id,"nonce":core::solve(c).unwrap(),
         "browser":{"webdriver":false,"cookies_enabled":true,"languages_count":1},
-        "behavior":{"challenge_id":c.challenge_id,"elapsed_ms":1000,"activation_ms":500,"trusted_activations":1,"pointer_events":0,"keyboard_events":1,"focus_changes":1}});
+        "behavior":{"challenge_id":c.challenge_id,"elapsed_ms":1000,"activation_ms":500,"trusted_activations":1,"pointer_events":0,"keyboard_events":1,"focus_changes":1}}));
     let response = public
         .oneshot(req.body(Body::from(body.to_string())).unwrap())
         .await
@@ -646,6 +655,115 @@ async fn web_submit(
         serde_json::from_slice(&to_bytes(response.into_body(), 1048576).await.unwrap()).unwrap();
     (status, value)
 }
+#[tokio::test]
+async fn website_adaptive_interaction_and_sticky_step_up() {
+    // Each case has independent history so the decision reflects its signals.
+    for case in 0..10 {
+        let (_dir, a, id, h) = website_setup();
+        let c: core::Challenge = serde_json::from_value(
+            web_prepare(&a, &h, &id, &core::random(), "adaptive").unwrap()["challenge"].clone(),
+        )
+        .unwrap();
+        let mut body = serde_json::json!({"challenge_id":c.challenge_id,"nonce":core::solve(&c).unwrap(),
+            "browser":{"webdriver":false,"cookies_enabled":true,"languages_count":1},
+            "behavior":{"challenge_id":c.challenge_id,"elapsed_ms":100,"activation_ms":100,
+            "trusted_activations":1,"pointer_events":0,"keyboard_events":1,"focus_changes":0}});
+        match case {
+            0 => {} // Fast keyboard activation is allowed.
+            1 => {
+                body["behavior"]["activation_ms"] = 500.into();
+                body["behavior"]["elapsed_ms"] = 500.into();
+                body["behavior"]["keyboard_events"] = 0.into();
+            }
+            2 => {
+                body["behavior"]["keyboard_events"] = 0.into();
+            }
+            3 => {
+                body["browser"]["webdriver"] = true.into();
+            }
+            4 => {
+                body["behavior"]["trusted_activations"] = 0.into();
+            }
+            5 => {
+                body["behavior"] = serde_json::Value::Null;
+            }
+            6 => {
+                body["browser"]["cookies_enabled"] = false.into();
+                body["browser"]["languages_count"] = 0.into();
+            }
+            7 => {
+                body["behavior"]["challenge_id"] = core::random().into();
+            }
+            8 => {
+                body["behavior"]["activation_ms"] = 101.into();
+            }
+            _ => {
+                body["browser"]["webdriver"] = true.into();
+                a.db.lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE challenges SET expires=0 WHERE id=?1",
+                        [&c.challenge_id],
+                    )
+                    .unwrap();
+            }
+        }
+        let (status, result) = web_submit_report(
+            a.clone(),
+            &c,
+            Some("https://site.example"),
+            "/public/v1/web/solutions",
+            Some(body),
+        )
+        .await;
+        if case < 2 {
+            assert_eq!(status, StatusCode::OK, "{case}: {result}");
+            assert!(result["verification_token"].is_string());
+        } else if case < 7 {
+            assert_eq!(
+                result["decision"], "additional_verification_required",
+                "{case}: {result}"
+            );
+            assert!(result["verification_token"].is_null());
+            let failures: i64 =
+                a.db.lock()
+                    .unwrap()
+                    .query_row(
+                        "SELECT COALESCE(SUM(failures),0) FROM attempt_history",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+            assert_eq!(failures, 0);
+            let (_, retry) = web_submit(
+                a.clone(),
+                &c,
+                Some("https://site.example"),
+                "/public/v1/web/solutions",
+            )
+            .await;
+            assert_eq!(retry["visual"]["task_id"], result["visual"]["task_id"]);
+            let solved = gateveriq::visual::solve(
+                &a,
+                "https://site.example",
+                visual_answer(&a, &c, &result),
+            )
+            .unwrap();
+            assert!(solved["verification_token"].is_string());
+        } else {
+            assert_eq!(
+                result["error"]["code"],
+                if case == 9 {
+                    "CHALLENGE_EXPIRED"
+                } else {
+                    "INVALID_REQUEST"
+                }
+            );
+            assert!(result.get("visual").is_none());
+        }
+    }
+}
+
 #[tokio::test]
 async fn website_binding_outcome_and_step_up() {
     use gateveriq::website::{outcome, LoginOutcome};

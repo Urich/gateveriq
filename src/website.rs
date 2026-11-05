@@ -159,6 +159,54 @@ pub(crate) fn binding(
     Ok(Some(bound))
 }
 
+/// Client reports are weak signals: combine them, never let them override history.
+/// Missing reports require a task; malformed or unbound reports are rejected.
+pub(crate) fn assess_interaction(p: &Solution, ttl_ms: u32) -> Result<(), Error> {
+    let (Some(browser), Some(behavior)) = (&p.browser, &p.behavior) else {
+        return Err(Error(
+            StatusCode::FORBIDDEN,
+            "ADDITIONAL_VERIFICATION_REQUIRED",
+        ));
+    };
+    if behavior.challenge_id != p.challenge_id
+        || behavior.activation_ms > behavior.elapsed_ms
+        || behavior.elapsed_ms > ttl_ms
+        || behavior.trusted_activations > 20
+        || behavior.pointer_events > 4096
+        || behavior.keyboard_events > 4096
+        || behavior.focus_changes > 4096
+    {
+        return Err(bad("INVALID_REQUEST"));
+    }
+    let mut risk = 0;
+    if browser.webdriver {
+        risk += 2;
+    }
+    if !browser.cookies_enabled {
+        risk += 1;
+    }
+    if browser.languages_count == 0 {
+        risk += 1;
+    }
+    if behavior.trusted_activations == 0 {
+        risk += 2;
+    }
+    if behavior.activation_ms < 300 {
+        risk += 1;
+    }
+    if behavior.pointer_events == 0 && behavior.keyboard_events == 0 && behavior.focus_changes == 0
+    {
+        risk += 1;
+    }
+    if risk >= 2 {
+        return Err(Error(
+            StatusCode::FORBIDDEN,
+            "ADDITIONAL_VERIFICATION_REQUIRED",
+        ));
+    }
+    Ok(())
+}
+
 /// Called inside the token-issuance transaction, also for legacy endpoints.
 pub(crate) fn gate(
     tx: &Transaction<'_>,
