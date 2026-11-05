@@ -82,6 +82,17 @@ application and never sent to Gateveriq.
 
 ## Browser
 
+Mount the widget inside your form. It renders a native checkbox that users can
+activate by mouse, touch or keyboard. The checkbox starts verification. On a
+high-risk attempt, the widget may then show an image challenge.
+
+Disable the protected submit button until the widget returns `verified` and
+a token. Send the token to your own backend with the form submission. If a
+field bound to the pending attempt changes, cancel the widget with an
+AbortSignal, discard the token and prepare a new attempt. The backend must
+consume the token before performing the action. Keep separate rate limits for
+actions such as posting comments and sending email.
+
 Serve `web/widget.js` and `web/worker.js` as static files on your website, in the same
 directory. The Worker is created on the website origin; do not import the widget
 directly from a different origin. Its solution request goes directly to Gateveriq.
