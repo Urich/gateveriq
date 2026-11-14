@@ -1,0 +1,133 @@
+{
+  "date": "2026-11-14",
+  "project_commit": "fd29869",
+  "scope": "source review, temporary localhost HTTP/CLI testing, lockfile advisory scan",
+  "baseline": {
+    "rust_tests_passed": 26,
+    "javascript_test_files_passed": 5,
+    "http_cli_e2e": "passed",
+    "rustfmt": "passed",
+    "clippy": "passed"
+  },
+  "dependency_audit": {
+    "tool": "cargo-audit 0.23.0",
+    "rustsec_commit": "4ef2df8e806a65e2f1ecc14f56f51249062b23d6",
+    "advisory_count": 1509,
+    "lockfile_dependency_count": 214,
+    "yanked_check": false,
+    "ignored_advisories": [],
+    "exit_code": 1,
+    "vulnerabilities": [
+      {
+        "id": "RUSTSEC-2026-0459",
+        "package": "libsqlite3-sys",
+        "version": "0.30.1",
+        "patched": [
+          ">=0.39.0"
+        ],
+        "url": "https://rustsec.org/advisories/RUSTSEC-2026-0459.html",
+        "local_exploitation_prerequisite": "attacker-controlled database and WAL files",
+        "exploit_attempted": false
+      }
+    ]
+  },
+  "secret_signature_scan": {
+    "current_tracked_text_files": 58,
+    "commits": 10,
+    "matches": 0,
+    "scope": "limited regex signatures; see report"
+  },
+  "local_probes": {
+    "checks": [
+      "public_hides_internal",
+      "internal_hides_public",
+      "authentication_required",
+      "integration_secret_isolation",
+      "action_allowlist",
+      "sql_metacharacters_rejected",
+      "unknown_fields_rejected",
+      "malformed_json_rejected",
+      "body_limit",
+      "content_type_enforced",
+      "browser_cannot_report_outcome",
+      "prepare_login",
+      "missing_origin",
+      "foreign_origin",
+      "different_allowed_origin",
+      "legacy_route_cannot_issue_website_token",
+      "account_binding_immutable",
+      "synthetic_reports_obtain_pow_token",
+      "token_integration_isolation",
+      "token_context_binding",
+      "single_concurrent_consumption",
+      "exact_receipt_retry",
+      "token_replay_rejected",
+      "consumed_token_not_reissued",
+      "prepare_register",
+      "visual_rejects_foreign_origin",
+      "visual_rejects_duplicate_indexes",
+      "visual_rejects_index_overflow",
+      "memorized_visual_0",
+      "visual_receipt_0",
+      "prepare_register",
+      "memorized_visual_1",
+      "visual_receipt_1",
+      "prepare_register",
+      "memorized_visual_2",
+      "visual_receipt_2",
+      "prepare_register",
+      "memorized_visual_3",
+      "visual_receipt_3",
+      "prepare_register",
+      "memorized_visual_4",
+      "visual_receipt_4",
+      "prepare_register",
+      "wrong_visual_rotates_0",
+      "stale_visual_task_rejected_0",
+      "wrong_visual_rotates_1",
+      "stale_visual_task_rejected_1",
+      "visual_budget_exhausted",
+      "visual_budget_cannot_reset",
+      "prepare_login",
+      "unproven_history_failure_0",
+      "unproven_history_failure_1",
+      "unproven_history_failure_2",
+      "unproven_history_failure_3",
+      "unproven_history_failure_4",
+      "shared_peer_history_forces_visual",
+      "cleanup_removes_expired_challenges",
+      "context_tombstones_survive_cleanup",
+      "second_cleanup_prepare_0",
+      "second_cleanup_prepare_1",
+      "second_cleanup_prepare_2",
+      "second_cleanup_prepare_3",
+      "second_cleanup_prepare_4",
+      "second_cleanup_prepare_5",
+      "second_cleanup_prepare_6",
+      "second_cleanup_prepare_7",
+      "second_cleanup_prepare_8",
+      "second_cleanup_prepare_9",
+      "second_cleanup_removes_challenges",
+      "context_tombstones_grow_across_cleanups",
+      "service_remains_healthy"
+    ],
+    "observations": {
+      "browserless_pow": "Accepted forged browser/behavior signals with valid PoW; documented limitation",
+      "memorized_visual": {
+        "solved": 5,
+        "attempts": 5,
+        "server_answer_read": false,
+        "browser_used": false,
+        "classification": "documented limitation of static image bank"
+      },
+      "shared_peer_history": "Five requests without valid PoW or Origin force visual step-up for the shared peer",
+      "cleanup": {
+        "challenges_after": 0,
+        "used_contexts_before": 8,
+        "used_contexts_after": 8,
+        "used_contexts_after_second_cycle": 18
+      }
+    },
+    "passed": 71
+  }
+}

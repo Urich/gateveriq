@@ -42,6 +42,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         files = {'/': ('examples/demo.html', 'text/html'),
                  '/widget.js': ('web/widget.js', 'text/javascript'),
+                 '/slider.js': ('web/slider.js', 'text/javascript'),
                  '/worker.js': ('web/worker.js', 'text/javascript')}
         if self.path not in files:
             self.send(404, {'error': 'Not found'})
@@ -62,13 +63,14 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b'{}')
             if self.path == '/prepare':
                 operation = secrets.token_urlsafe(32)
+                context = api('/internal/v1/contexts', {'integration_id': INTEGRATION, 'action': 'demo'}, True)['context_id']
                 if WEBSITE:
                     prepared = api('/internal/v1/web/attempts', {
-                        'integration_id': INTEGRATION, 'action': 'demo', 'context_id': operation,
+                        'integration_id': INTEGRATION, 'action': 'demo', 'context_id': context,
                         'account_id': 'local-demo-account', 'origin': 'http://127.0.0.1:8090'}, True)
                 else:
                     prepared = {'challenge': api('/internal/v1/challenges', {
-                        'integration_id': INTEGRATION, 'action': 'demo', 'context_id': operation}, True)}
+                        'integration_id': INTEGRATION, 'action': 'demo', 'context_id': context}, True)}
                 with LOCK:
                     now = time.time()
                     for key in list(OPERATIONS):
@@ -77,7 +79,7 @@ class Handler(BaseHTTPRequestHandler):
                     if len(OPERATIONS) >= 100:
                         self.send(429, {'error': 'Demo operation limit'})
                         return
-                    OPERATIONS[operation] = {'expires': now + 300, 'request_id': secrets.token_urlsafe(32), 'done': False, 'failed_login': data.get('failed_login') is True}
+                    OPERATIONS[operation] = {'expires': now + 300, 'request_id': secrets.token_urlsafe(32), 'done': False, 'context': context, 'failed_login': data.get('failed_login') is True}
                 self.send(200, {'operation_id': operation, 'website': WEBSITE, **prepared})
             elif self.path == '/public/v1/solutions':
                 self.send(200, api(self.path, data))
@@ -92,11 +94,11 @@ class Handler(BaseHTTPRequestHandler):
                         self.send(200, {'message': 'Operation already completed'})
                         return
                     api('/internal/v1/verifications/consume', {
-                        'integration_id': INTEGRATION, 'action': 'demo', 'context_id': operation,
+                        'integration_id': INTEGRATION, 'action': 'demo', 'context_id': record['context'],
                         'request_id': record['request_id'], 'verification_token': data['verification_token']}, True)
                     if WEBSITE:
                         api('/internal/v1/web/outcomes', {
-                            'integration_id': INTEGRATION, 'action': 'demo', 'context_id': operation,
+                            'integration_id': INTEGRATION, 'action': 'demo', 'context_id': record['context'],
                             'request_id': record['request_id'], 'success': not record['failed_login']}, True)
                     record['done'] = True
                 self.send(200, {'message': 'Verification passed; simulated password was incorrect'

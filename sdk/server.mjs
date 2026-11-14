@@ -27,13 +27,16 @@ export class GateveriqClient {
   }
 
   /** Save contextId, requestId and the account/action in your server session. */
-  createAttempt({accountId, origin, action = 'login'}) {
-    return {accountId, origin, action, contextId: randomBytes(32).toString('base64url'),
+  async createAttempt({accountId, origin, action = 'login'}) {
+    const context = await this.post('/internal/v1/contexts', {action});
+    if (typeof context.context_id !== 'string' || !context.context_id) throw Error('Missing context');
+    return {accountId, origin, action, contextId: context.context_id,
       requestId: randomBytes(32).toString('base64url')};
   }
 
   async prepareAttempt({accountId, origin, action = 'login',
-    contextId = randomBytes(32).toString('base64url'), requestId = randomBytes(32).toString('base64url')}) {
+    contextId, requestId = randomBytes(32).toString('base64url')}) {
+    contextId ??= (await this.createAttempt({accountId, origin, action})).contextId;
     const attempt = await this.post('/internal/v1/web/attempts', {
       action, context_id: contextId, account_id: accountId, origin,
     });

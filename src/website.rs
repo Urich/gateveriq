@@ -1,8 +1,5 @@
 //! Website attempts are created and reported exclusively by an authenticated backend.
-use crate::{
-    core,
-    service::{self, bad, db_error, Error, Prepare, Shared, Solution},
-};
+use crate::service::{self, bad, db_error, Error, Prepare, Shared, Solution};
 use axum::{
     extract::{ConnectInfo, DefaultBodyLimit, State},
     http::{HeaderMap, HeaderValue, StatusCode},
@@ -41,10 +38,10 @@ impl WebsitePolicy {
             && (1..=10000).contains(&self.account_failure_limit)
     }
 }
-pub fn migrate(db: &Connection) -> rusqlite::Result<()> {
+pub fn init_schema(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS website_origins(integration_id TEXT NOT NULL REFERENCES integrations(id),origin TEXT NOT NULL,PRIMARY KEY(integration_id,origin));
     CREATE TABLE IF NOT EXISTS website_attempts(challenge_id TEXT PRIMARY KEY REFERENCES challenges(id) ON DELETE CASCADE,account_hash TEXT NOT NULL,origin TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS login_outcomes(challenge_id TEXT PRIMARY KEY,integration_id TEXT NOT NULL REFERENCES integrations(id),account_hash TEXT NOT NULL,success INTEGER NOT NULL,created INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS login_outcomes(challenge_id TEXT PRIMARY KEY,integration_id TEXT NOT NULL REFERENCES integrations(id),account_hash TEXT NOT NULL,success INTEGER NOT NULL,created INTEGER NOT NULL,action TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS login_account_history ON login_outcomes(integration_id,account_hash,created);
     CREATE INDEX IF NOT EXISTS login_outcome_expiry ON login_outcomes(created);")
 }
@@ -84,8 +81,7 @@ pub struct WebsitePrepare {
 
 pub fn prepare(app: &Shared, headers: &HeaderMap, p: WebsitePrepare) -> Result<Value, Error> {
     app.auth(headers, &p.integration_id)?;
-    if core::decode(&p.context_id, 32).is_none()
-        || p.account_id.is_empty()
+    if p.account_id.is_empty()
         || p.account_id.len() > 128
         || p.account_id.chars().any(char::is_control)
         || validate_origin(&p.origin).is_err()

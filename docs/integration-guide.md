@@ -8,7 +8,7 @@ CORS and visual verification, use [website integration](website-integration.md).
 ## Backend contract
 
 1. Apply your own request and business limits.
-2. Generate and persist a cryptographically random operation ID, binding it to the intended action and immutable application parameters.
+2. Obtain a signed context through authenticated `POST /internal/v1/contexts` with `integration_id` and `action`. Persist its `context_id` and immutable application parameters. Its deadline starts at issuance.
 3. Call Gateveriq's internal challenge endpoint with your server credential.
 4. Return the challenge and operation ID to the client.
 5. The client solves the challenge and submits it to the public API.
@@ -22,7 +22,7 @@ Never send your integration secret to clients. A public integration ID alone doe
 
 ## Browser widget
 
-Reverse proxy the public API and assets under your application's origin. For example, `/gateveriq/widget.js`, `/gateveriq/worker.js` and `/gateveriq/public/v1/solutions` should strip `/gateveriq` upstream. The original solution route has no CORS. Website mode supports cross-origin solution submission; see [website integration](website-integration.md).
+Reverse proxy the public API and assets under your application's origin. For example, `/gateveriq/widget.js`, `/gateveriq/slider.js`, `/gateveriq/worker.js` and `/gateveriq/public/v1/solutions` should strip `/gateveriq` upstream. The original solution route has no CORS. Website mode supports cross-origin solution submission; see [website integration](website-integration.md).
 
 ```html
 <div id="verification"></div>

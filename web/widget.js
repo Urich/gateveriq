@@ -1,20 +1,23 @@
+import {sliderRoot, sliderState} from './slider.js';
 const workerURL = new URL('./worker.js', import.meta.url);
 const visualMessages = {
   en: {
-    instruction: 'Select all illustrations showing the same type of object as the reference. Colors and poses may differ.',
-    reference: 'Reference illustration', image: 'Image', confirm: 'Confirm selection',
-    checking: 'Checking images...', completed: 'Verification completed',
-    retry: 'Selection was incorrect. Try the new images.',
+    instruction: 'Fit the puzzle piece', drag: 'Slide to align', position: 'Puzzle piece position',
+    loading: 'Loading puzzle…', ready: 'Release or press Enter',
+    confirm: 'Check',
+    checking: 'Checking puzzle…', completed: 'Verification completed',
+    retry: 'Try again with this new puzzle.',
     expired: 'Visual challenge expired. Start a new verification.',
     exhausted: 'Visual attempts exhausted. Start a new login attempt.',
     cancelled: 'Cancelled', failed: 'Verification failed. Please try again.',
     activate: 'Verify this request',
   },
   ru: {
-    instruction: 'Выберите все картинки с таким же типом объекта, как на образце. Цвета и позы могут отличаться.',
-    reference: 'Образец для сравнения', image: 'Картинка', confirm: 'Подтвердить выбор',
-    checking: 'Проверяем картинки...', completed: 'Проверка завершена',
-    retry: 'Выбор неверный. Попробуйте новые картинки.',
+    instruction: 'Совместите фрагмент с вырезом', drag: 'Потяните вправо', position: 'Положение фрагмента',
+    loading: 'Загружаем пазл…', ready: 'Отпустите или Enter',
+    confirm: 'Проверить',
+    checking: 'Проверяем пазл…', completed: 'Проверка завершена',
+    retry: 'Не совпало. Попробуйте новый пазл.',
     expired: 'Время задания истекло. Начните проверку заново.',
     exhausted: 'Попытки закончились. Начните вход заново.',
     cancelled: 'Отменено', failed: 'Не удалось выполнить проверку. Попробуйте ещё раз.',
@@ -137,12 +140,11 @@ export class GateveriqWidget {
 }
 
 /** Use an attempt prepared by your backend, never an integration secret. */
-export async function verifyWebsiteAttempt(element, attempt, {serviceURL, signal = new AbortController().signal, locale} = {}) {
+export async function verifyWebsiteAttempt(element, attempt, {serviceURL, signal = new AbortController().signal, locale, theme = 'auto', styleNonce} = {}) {
   locale = resolveLocale(element, locale);
   if (attempt.decision === 'additional_verification_required') {
     if (attempt.visual && attempt.challenge) {
-      await collectBehavior(element, attempt.challenge, signal, locale);
-      return verifyVisual(element, attempt.challenge, attempt.visual, {serviceURL, signal, locale});
+      return verifyVisual(element, attempt.challenge, attempt.visual, {serviceURL, signal, locale, theme, styleNonce});
     }
     return {decision: attempt.decision};
   }
@@ -154,63 +156,90 @@ export async function verifyWebsiteAttempt(element, attempt, {serviceURL, signal
     return {decision: 'verified', verification_token};
   } catch (error) {
     if (error.decision === 'additional_verification_required') {
-      if (error.visual) return verifyVisual(element, error.challenge || attempt.challenge, error.visual, {serviceURL, signal, locale});
+      if (error.visual) return verifyVisual(element, error.challenge || attempt.challenge, error.visual, {serviceURL, signal, locale, theme, styleNonce});
       return {decision: error.decision};
     }
     throw error;
   }
 }
 
-/** Image contents have neutral labels; answers are never encoded in DOM metadata. */
-export function selectImages(element, visual, signal, message = '', {locale} = {}) {
+/** Compact slider, native range semantics, pointer/touch and keyboard confirmation. */
+export function selectSlider(element, visual, signal, message = '', {locale, theme = 'auto', styleNonce} = {}) {
   const language = resolveLocale(element, locale), t = visualMessages[language];
+  if (visual.kind !== 'slider_puzzle' || visual.width !== 280 || visual.height !== 140
+      || visual.piece_size !== 40 || visual.max_position !== 240
+      || !Number.isInteger(visual.piece_y) || visual.piece_y < 0 || visual.piece_y > 100
+      || ![visual.background, visual.piece].every(src => typeof src === 'string' && src.startsWith('data:image/png;base64,'))) {
+    return Promise.reject(Error('Invalid slider task'));
+  }
   return new Promise((resolve, reject) => {
-    const selected = new Set();
-    const heading = document.createElement('p');
-    heading.textContent = visual.instruction_key === 'match_reference'
-      || visual.instruction === visualMessages.en.instruction ? t.instruction : visual.instruction;
-    const reference = document.createElement('img'); reference.src = visual.reference;
-    reference.alt = t.reference; reference.width = 112; reference.height = 112;
-    reference.style.borderRadius = '14px'; reference.style.objectFit = 'contain';
-    const grid = document.createElement('div');
-    grid.style.display = 'grid'; grid.style.gridTemplateColumns = 'repeat(4, minmax(0, 1fr))';
-    grid.style.gap = '8px'; grid.style.maxWidth = '440px';
-    const listeners = [];
+    const root = sliderRoot(element, theme, styleNonce);
+    const card = document.createElement('section'); card.className = 'card'; card.lang = language;
+    const heading = document.createElement('p'); heading.className = 'heading';
+    heading.id = 'instruction'; heading.textContent = t.instruction;
+    const stage = document.createElement('div'); stage.className = 'stage';
+    const background = document.createElement('img'); background.className = 'background';
+    background.alt = ''; background.draggable = false;
+    const piece = document.createElement('img'); piece.className = 'piece';
+    piece.alt = ''; piece.draggable = false;
+    piece.style.width = `${visual.piece_size / visual.width * 100}%`;
+    piece.style.top = `${visual.piece_y / visual.height * 100}%`;
+    piece.style.left = '0%';
+    stage.append(background, piece);
+    const track = document.createElement('div'); track.className = 'track';
+    const hint = document.createElement('span'); hint.className = 'track-label'; hint.textContent = t.drag;
+    const handle = document.createElement('span'); handle.className = 'handle'; handle.textContent = '→';
+    handle.style.left = '2px'; handle.setAttribute('aria-hidden','true');
+    const range = document.createElement('input'); range.type = 'range';
+    range.min = '0'; range.max = String(visual.max_position); range.step = '1'; range.value = '0';
+    range.setAttribute('aria-label', t.position); range.setAttribute('aria-describedby','instruction help');
+    range.disabled = true;
+    track.append(hint, handle, range);
+    const footer = document.createElement('div'); footer.className = 'footer';
+    const note = document.createElement('p'); note.className = 'note'; note.id = 'help';
+    note.setAttribute('role','status'); note.setAttribute('aria-live','polite'); note.textContent = t.loading;
     const confirm = document.createElement('button'); confirm.type = 'button';
     confirm.textContent = t.confirm; confirm.disabled = true;
-    const note = document.createElement('p'); note.textContent = message;
-    note.setAttribute('role', 'status');
-    visual.images.forEach((src, index) => {
-      const button = document.createElement('button'); button.type = 'button';
-      button.setAttribute('aria-label', `${t.image} ${index + 1}`);
-      button.setAttribute('aria-pressed', 'false');
-      button.style.margin = '0'; button.style.minWidth = '0';
-      button.style.padding = '0'; button.style.border = '3px solid transparent';
-      button.style.borderRadius = '12px'; button.style.overflow = 'hidden';
-      button.style.background = '#f7f5ef'; button.style.cursor = 'pointer';
-      const img = document.createElement('img'); img.src = src; img.alt = '';
-      img.style.width = '100%'; img.style.display = 'block'; button.append(img);
-      const toggle = () => {
-        if (selected.has(index)) selected.delete(index); else selected.add(index);
-        button.setAttribute('aria-pressed', String(selected.has(index)));
-        button.style.borderColor = selected.has(index) ? '#2563eb' : 'transparent';
-        confirm.disabled = selected.size === 0;
-      };
-      button.addEventListener('click', toggle); listeners.push([button, toggle]); grid.append(button);
-    });
-    element.replaceChildren(heading, reference, grid, note, confirm);
-    for (const child of [heading, reference, grid, note, confirm]) child.setAttribute('lang', language);
+    footer.append(note, confirm); card.append(heading, stage, track, footer); root.append(card);
+    let loaded = 0, pointer = false, settled = false;
+    const listeners = [];
+    const listen = (target, event, callback) => { target.addEventListener(event, callback); listeners.push([target,event,callback]); };
     const cleanup = () => {
-      clearTimeout(timer); signal.removeEventListener('abort', abort);
-      confirm.removeEventListener('click', submit);
-      for (const [button, listener] of listeners) button.removeEventListener('click', listener);
+      clearTimeout(timer);
+      for (const [target,event,callback] of listeners) target.removeEventListener(event,callback);
     };
-    const abort = () => { cleanup(); reject(new Error(t.cancelled)); };
-    const submit = () => { if (!selected.size) return; cleanup(); resolve([...selected].sort((a,b) => a-b)); };
-    confirm.addEventListener('click', submit);
-    const timer = setTimeout(() => { cleanup(); reject(new Error(t.expired)); }, Math.max(0, visual.expires_at * 1000 - Date.now()));
-    signal.addEventListener('abort', abort, {once: true});
-    if (signal.aborted) abort();
+    const fail = error => { if (settled) return; settled = true; cleanup(); range.disabled = confirm.disabled = true; reject(error); };
+    const submit = () => {
+      const position = Number(range.value);
+      if (settled || loaded !== 2 || !Number.isInteger(position) || position <= 0 || position > visual.max_position) return;
+      if (Date.now() >= visual.expires_at * 1000) return fail(Error(t.expired));
+      settled = true; cleanup(); range.disabled = confirm.disabled = true; resolve(position);
+    };
+    listen(range,'input',() => {
+      const position = Math.max(0,Math.min(visual.max_position,Number(range.value) || 0));
+      piece.style.left = `${position / visual.width * 100}%`;
+      handle.style.left = `calc(${position / visual.max_position * 100}% - ${position / visual.max_position * 38 - 2}px)`;
+      hint.style.opacity = position > 0 ? '0' : '1';
+      confirm.disabled = loaded !== 2 || position === 0;
+    });
+    listen(range,'pointerdown',() => { pointer = true; });
+    listen(range,'pointercancel',() => { pointer = false; });
+    listen(range,'change',() => { if (pointer) submit(); pointer = false; });
+    listen(range,'keydown',event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); submit(); }
+    });
+    listen(confirm,'click',submit);
+    listen(signal,'abort',() => fail(Error(t.cancelled)));
+    const timer = setTimeout(() => fail(Error(t.expired)), Math.max(0, Math.min(120000,visual.expires_at * 1000 - Date.now())));
+    for (const [img,src] of [[background,visual.background],[piece,visual.piece]]) {
+      listen(img,'load',() => {
+        loaded++;
+        if (loaded === 2 && !settled) { range.disabled = false; note.textContent = message || t.ready; }
+      });
+      listen(img,'error',() => fail(Error(t.failed)));
+      img.src = src;
+    }
+    if (signal.aborted) fail(Error(t.cancelled));
   });
 }
 async function visualProof(challenge, signal) {
@@ -227,39 +256,38 @@ async function visualProof(challenge, signal) {
     });
   } finally { signal.removeEventListener('abort', abort); worker.terminate(); }
 }
-export async function verifyVisual(element, challenge, visual, {serviceURL, signal = new AbortController().signal, locale} = {}) {
+export async function verifyVisual(element, challenge, visual, {serviceURL, signal = new AbortController().signal, locale, theme = 'auto', styleNonce} = {}) {
   locale = resolveLocale(element, locale);
   const t = visualMessages[locale];
   const endpoint = new URL('/public/v1/web/visual/solutions', serviceURL);
-  let stopLoading;
   try {
     let nonce, message = '';
     const initialBudget = visual.max_attempts;
     for (let attempt = 0; attempt < initialBudget; attempt++) {
-      const selected = await selectImages(element, visual, signal, message, {locale});
-      stopLoading = showLoading(element, t.checking);
+      const position = await selectSlider(element, visual, signal, message, {locale, theme, styleNonce});
+      sliderState(element, t.checking);
       nonce ??= await visualProof(challenge, signal);
       const response = await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({challenge_id:challenge.challenge_id, task_id:visual.task_id, nonce, selected}), signal});
+        body:JSON.stringify({challenge_id:challenge.challenge_id, task_id:visual.task_id, nonce, position}), signal});
       const result = await response.json();
       if (response.ok && typeof result.verification_token === 'string' && result.verification_token) {
-        element.textContent = t.completed;
+        sliderState(element, t.completed, 'success');
         return {decision:'verified', verification_token:result.verification_token};
       }
       if (result.error?.code !== 'INVALID_VISUAL_SOLUTION') throw Error(result.error?.code || 'Visual verification failed');
       if (!result.visual) throw Error('Missing replacement visual task');
       visual = result.visual;
       message = t.retry;
-      stopLoading(); stopLoading = null;
+
     }
     throw Error(t.exhausted);
   } catch (error) {
     const code = error.message;
-    element.textContent = signal.aborted ? t.cancelled
+    const message = signal.aborted ? t.cancelled
       : ['VISUAL_EXPIRED', 'CHALLENGE_EXPIRED'].includes(code) ? t.expired
       : code === 'VISUAL_ATTEMPTS_EXHAUSTED' ? t.exhausted
       : Object.values(t).includes(code) ? code : t.failed;
+    sliderState(element, message, 'error');
     throw error;
   }
-  finally { stopLoading?.(); }
 }

@@ -26,6 +26,20 @@ fn setup() -> (tempfile::TempDir, std::sync::Arc<App>, String, HeaderMap) {
     );
     (dir, a, id, h)
 }
+fn context(a: &std::sync::Arc<App>, id: &str, h: &HeaderMap) -> String {
+    create_context(
+        a,
+        h,
+        ContextRequest {
+            integration_id: id.into(),
+            action: "register".into(),
+        },
+    )
+    .unwrap()["context_id"]
+        .as_str()
+        .unwrap()
+        .into()
+}
 fn issue(a: &std::sync::Arc<App>, id: &str, h: &HeaderMap, ctx: &str) -> core::Challenge {
     prepare(
         a,
@@ -66,8 +80,9 @@ fn token(a: &std::sync::Arc<App>, c: &core::Challenge) -> String {
 #[test]
 fn lifecycle_and_retry() {
     let (_d, a, id, h) = setup();
-    let c = issue(&a, &id, &h, "ctx");
-    assert_eq!(c.challenge_id, issue(&a, &id, &h, "ctx").challenge_id);
+    let ctx = context(&a, &id, &h);
+    let c = issue(&a, &id, &h, &ctx);
+    assert_eq!(c.challenge_id, issue(&a, &id, &h, &ctx).challenge_id);
     let t = token(&a, &c);
     assert_eq!(t, token(&a, &c));
     assert_eq!(
@@ -76,10 +91,10 @@ fn lifecycle_and_retry() {
             .1,
         "CONTEXT_MISMATCH"
     );
-    assert!(consume(&a, &h, request(&id, &t, "ctx", "r")).is_ok());
-    assert!(consume(&a, &h, request(&id, &t, "ctx", "r")).is_ok());
+    assert!(consume(&a, &h, request(&id, &t, &ctx, "r")).is_ok());
+    assert!(consume(&a, &h, request(&id, &t, &ctx, "r")).is_ok());
     assert_eq!(
-        consume(&a, &h, request(&id, &t, "ctx", "other"))
+        consume(&a, &h, request(&id, &t, &ctx, "other"))
             .unwrap_err()
             .1,
         "TOKEN_ALREADY_CONSUMED"
@@ -88,7 +103,8 @@ fn lifecycle_and_retry() {
 #[test]
 fn expiry() {
     let (_d, a, id, h) = setup();
-    let c = issue(&a, &id, &h, "ctx");
+    let ctx = context(&a, &id, &h);
+    let c = issue(&a, &id, &h, &ctx);
     let nonce = core::solve(&c).unwrap();
     a.db.lock()
         .unwrap()
@@ -112,7 +128,8 @@ fn expiry() {
 #[test]
 fn token_expiry_and_restart() {
     let (_d, a, id, h) = setup();
-    let c = issue(&a, &id, &h, "ctx");
+    let ctx = context(&a, &id, &h);
+    let c = issue(&a, &id, &h, &ctx);
     let t = token(&a, &c);
     let b = App::open(a.config.clone()).unwrap();
     assert_eq!(t, token(&b, &c));
@@ -121,7 +138,7 @@ fn token_expiry_and_restart() {
         .execute("UPDATE challenges SET token_expires=0", [])
         .unwrap();
     assert_eq!(
-        consume(&b, &h, request(&id, &t, "ctx", "r")).unwrap_err().1,
+        consume(&b, &h, request(&id, &t, &ctx, "r")).unwrap_err().1,
         "TOKEN_EXPIRED"
     );
 }
@@ -142,13 +159,14 @@ fn auth_and_isolation() {
         .0,
         StatusCode::UNAUTHORIZED
     );
-    let c = issue(&a, &id, &h, "ctx");
+    let ctx = context(&a, &id, &h);
+    let c = issue(&a, &id, &h, &ctx);
     let t = token(&a, &c);
     let (other, secret) = a.create_integration("other", &["register".into()]).unwrap();
     let mut h2 = HeaderMap::new();
     h2.insert("authorization", format!("Bearer {secret}").parse().unwrap());
     assert_eq!(
-        consume(&a, &h2, request(&other, &t, "ctx", "r"))
+        consume(&a, &h2, request(&other, &t, &ctx, "r"))
             .unwrap_err()
             .1,
         "INVALID_TOKEN"
@@ -157,15 +175,23 @@ fn auth_and_isolation() {
 #[test]
 fn concurrent_consumption() {
     let (_d, a, id, h) = setup();
-    let c = issue(&a, &id, &h, "ctx");
+    let ctx = context(&a, &id, &h);
+    let c = issue(&a, &id, &h, &ctx);
     let t = token(&a, &c);
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
     let threads: Vec<_> = (0..8)
         .map(|i| {
-            let (a, id, h, t, b) = (a.clone(), id.clone(), h.clone(), t.clone(), barrier.clone());
+            let (a, id, h, t, b, ctx) = (
+                a.clone(),
+                id.clone(),
+                h.clone(),
+                t.clone(),
+                barrier.clone(),
+                ctx.clone(),
+            );
             std::thread::spawn(move || {
                 b.wait();
-                consume(&a, &h, request(&id, &t, "ctx", &format!("r{i}"))).is_ok()
+                consume(&a, &h, request(&id, &t, &ctx, &format!("r{i}"))).is_ok()
             })
         })
         .collect();
@@ -181,7 +207,8 @@ fn concurrent_consumption() {
 #[test]
 fn malformed_and_invalid_proof() {
     let (_d, a, id, h) = setup();
-    let mut c = issue(&a, &id, &h, "ctx");
+    let ctx = context(&a, &id, &h);
+    let mut c = issue(&a, &id, &h, &ctx);
     assert!(!core::verify(&c, "bad"));
     c.difficulty_bits = 25;
     assert!(core::solve(&c).is_err());
@@ -256,7 +283,8 @@ fn browser_policy_gates_token_issuance() {
         .unwrap()
         .execute("INSERT INTO browser_policies VALUES(?1)", [&id])
         .unwrap();
-    let c = issue(&a, &id, &h, "browser");
+    let ctx = context(&a, &id, &h);
+    let c = issue(&a, &id, &h, &ctx);
     let submit = |browser| {
         solution(
             &a,
@@ -306,7 +334,7 @@ fn browser_policy_gates_token_issuance() {
             request(
                 &id,
                 result["verification_token"].as_str().unwrap(),
-                "browser",
+                &ctx,
                 "login"
             )
         )
@@ -322,7 +350,8 @@ fn behavior_policy_requires_bound_plausible_interaction() {
         .unwrap()
         .execute("INSERT INTO behavior_policies VALUES(?1)", [&id])
         .unwrap();
-    let c = issue(&a, &id, &h, "behavior");
+    let ctx = context(&a, &id, &h);
+    let c = issue(&a, &id, &h, &ctx);
     let submit = |behavior| {
         solution(
             &a,
@@ -374,7 +403,7 @@ fn behavior_policy_requires_bound_plausible_interaction() {
             request(
                 &id,
                 result["verification_token"].as_str().unwrap(),
-                "behavior",
+                &ctx,
                 "login"
             )
         )
@@ -394,7 +423,8 @@ fn persistent_failure_history_blocks_and_expires() {
         .unwrap()
         .execute("INSERT INTO browser_policies VALUES(?1)", [&id])
         .unwrap();
-    let c = issue(&a, &id, &h, "history");
+    let ctx = context(&a, &id, &h);
+    let c = issue(&a, &id, &h, &ctx);
     let make = || Solution {
         challenge_id: c.challenge_id.clone(),
         nonce: core::solve(&c).unwrap(),
@@ -487,7 +517,8 @@ fn attempt_rate_counts_success_and_reserves_concurrently() {
         .unwrap()
         .execute("INSERT INTO history_policies VALUES(?1)", [&id])
         .unwrap();
-    let c = issue(&a, &id, &h, "rate");
+    let ctx = context(&a, &id, &h);
+    let c = issue(&a, &id, &h, &ctx);
     let nonce = core::solve(&c).unwrap();
     let start = std::sync::Arc::new(std::sync::Barrier::new(25));
     let handles: Vec<_> = (0..25)
@@ -540,7 +571,8 @@ async fn http_history_uses_peer_instead_of_forwarded_header() {
         .unwrap()
         .execute("INSERT INTO browser_policies VALUES(?1)", [&id])
         .unwrap();
-    let c = issue(&a, &id, &h, "http-history");
+    let ctx = context(&a, &id, &h);
+    let c = issue(&a, &id, &h, &ctx);
     let (public, _) = routers(a);
     let body = serde_json::json!({"challenge_id":c.challenge_id,"nonce":core::solve(&c).unwrap()})
         .to_string();
@@ -661,7 +693,8 @@ async fn website_adaptive_interaction_and_sticky_step_up() {
     for case in 0..10 {
         let (_dir, a, id, h) = website_setup();
         let c: core::Challenge = serde_json::from_value(
-            web_prepare(&a, &h, &id, &core::random(), "adaptive").unwrap()["challenge"].clone(),
+            web_prepare(&a, &h, &id, &context(&a, &id, &h), "adaptive").unwrap()["challenge"]
+                .clone(),
         )
         .unwrap();
         let mut body = serde_json::json!({"challenge_id":c.challenge_id,"nonce":core::solve(&c).unwrap(),
@@ -768,7 +801,7 @@ async fn website_adaptive_interaction_and_sticky_step_up() {
 async fn website_binding_outcome_and_step_up() {
     use gateveriq::website::{outcome, LoginOutcome};
     let (_dir, a, id, h) = website_setup();
-    let ctx = core::random();
+    let ctx = context(&a, &id, &h);
     let p = web_prepare(&a, &h, &id, &ctx, "opaque-account-1").unwrap();
     assert_eq!(
         p,
@@ -815,11 +848,18 @@ async fn website_binding_outcome_and_step_up() {
         "OUTCOME_CONFLICT"
     );
     let reopened = App::open(a.config.clone()).unwrap();
-    let risk = web_prepare(&reopened, &h, &id, &core::random(), "opaque-account-1").unwrap();
+    let risk = web_prepare(
+        &reopened,
+        &h,
+        &id,
+        &context(&reopened, &id, &h),
+        "opaque-account-1",
+    )
+    .unwrap();
     assert_eq!(risk["decision"], "additional_verification_required");
     assert!(risk["verification_token"].is_null());
     assert_eq!(
-        web_prepare(&a, &h, &id, &core::random(), "another-account").unwrap()["decision"],
+        web_prepare(&a, &h, &id, &context(&a, &id, &h), "another-account").unwrap()["decision"],
         "verify"
     );
     let raw: i64 =
@@ -837,7 +877,7 @@ async fn website_binding_outcome_and_step_up() {
         .execute("UPDATE login_outcomes SET created=created-86401", [])
         .unwrap();
     assert_eq!(
-        web_prepare(&a, &h, &id, &core::random(), "opaque-account-1").unwrap()["decision"],
+        web_prepare(&a, &h, &id, &context(&a, &id, &h), "opaque-account-1").unwrap()["decision"],
         "verify"
     );
     a.cleanup().unwrap();
@@ -851,7 +891,7 @@ async fn website_binding_outcome_and_step_up() {
 #[tokio::test]
 async fn website_cannot_bypass_origin_or_use_unbound_challenge() {
     let (_dir, a, id, h) = website_setup();
-    let ctx = core::random();
+    let ctx = context(&a, &id, &h);
     let c: core::Challenge = serde_json::from_value(
         web_prepare(&a, &h, &id, &ctx, "account").unwrap()["challenge"].clone(),
     )
@@ -865,7 +905,7 @@ async fn website_cannot_bypass_origin_or_use_unbound_challenge() {
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(result["error"]["code"], "ORIGIN_NOT_ALLOWED");
     }
-    let unbound = issue(&a, &id, &h, &core::random());
+    let unbound = issue(&a, &id, &h, &context(&a, &id, &h));
     assert_eq!(
         web_submit(
             a.clone(),
@@ -918,7 +958,7 @@ async fn website_preflight_and_submit_time_additional_decision() {
     use tower::ServiceExt;
     let (_dir, a, id, h) = website_setup();
     let c: core::Challenge = serde_json::from_value(
-        web_prepare(&a, &h, &id, &core::random(), "account").unwrap()["challenge"].clone(),
+        web_prepare(&a, &h, &id, &context(&a, &id, &h), "account").unwrap()["challenge"].clone(),
     )
     .unwrap();
     let (public, _) = routers(a.clone());
@@ -989,7 +1029,7 @@ fn visual_task(
     h: &HeaderMap,
     id: &str,
 ) -> (String, serde_json::Value, core::Challenge) {
-    let ctx = core::random();
+    let ctx = context(a, id, h);
     let c: core::Challenge = serde_json::from_value(
         web_prepare(a, h, id, &ctx, "visual-account").unwrap()["challenge"].clone(),
     )
@@ -1015,22 +1055,20 @@ fn visual_answer(
         challenge_id: c.challenge_id.clone(),
         task_id: offered["visual"]["task_id"].as_str().unwrap().into(),
         nonce: core::solve(c).unwrap(),
-        selected: (0u8..16).filter(|i| mask & (1 << i) != 0).collect(),
+        position: mask,
     }
 }
 #[tokio::test]
 async fn visual_completion_bound_to_attempt_and_normal_token_lifecycle() {
     let (_dir, a, id, h) = website_setup();
     let (ctx, offered, c) = visual_task(&a, &h, &id);
-    assert_eq!(offered["visual"]["images"].as_array().unwrap().len(), 16);
+    assert_eq!(offered["visual"]["kind"], "slider_puzzle");
     assert!(offered["visual"].get("answer").is_none());
-    let unique: std::collections::HashSet<_> = offered["visual"]["images"]
-        .as_array()
+    assert!(offered["visual"].get("position").is_none());
+    assert!(offered["visual"]["background"]
+        .as_str()
         .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    assert_eq!(unique.len(), 16);
+        .starts_with("data:image/png;base64,"));
     assert_eq!(
         offered,
         gateveriq::visual::offer(&a, &c.challenge_id, "https://site.example").unwrap()
@@ -1071,14 +1109,14 @@ async fn visual_completion_bound_to_attempt_and_normal_token_lifecycle() {
         "INVALID_SOLUTION"
     );
     let mut duplicate = visual_answer(&a, &c, &offered);
-    duplicate.selected = vec![1, 1];
+    duplicate.position = 241;
     assert_eq!(
         gateveriq::visual::solve(&a, "https://site.example", duplicate)
             .unwrap_err()
             .1,
         "INVALID_REQUEST"
     );
-    // Persisted image tasks and their answers survive restart.
+    // Persisted slider tasks and their coordinates survive restart.
     let reopened = App::open(a.config.clone()).unwrap();
     let result = gateveriq::visual::solve(
         &reopened,
@@ -1116,7 +1154,7 @@ fn visual_attempts_expiration_and_no_reset() {
     let (_, mut offered, c) = visual_task(&a, &h, &id);
     for attempt in 0..3 {
         let mut wrong = visual_answer(&a, &c, &offered);
-        wrong.selected = vec![];
+        wrong.position = 0;
         assert_eq!(
             gateveriq::visual::solve(&a, "https://site.example", wrong)
                 .unwrap_err()
@@ -1129,8 +1167,8 @@ fn visual_attempts_expiration_and_no_reset() {
                 gateveriq::visual::offer(&a, &c.challenge_id, "https://site.example").unwrap();
             assert_ne!(previous["visual"]["task_id"], offered["visual"]["task_id"]);
             assert_ne!(
-                previous["visual"]["reference"],
-                offered["visual"]["reference"]
+                previous["visual"]["background"],
+                offered["visual"]["background"]
             );
             assert_eq!(
                 previous["visual"]["expires_at"],
@@ -1138,7 +1176,7 @@ fn visual_attempts_expiration_and_no_reset() {
             );
             assert_eq!(offered["visual"]["max_attempts"], 2 - attempt);
             let mut stale = visual_answer(&a, &c, &previous);
-            stale.selected = vec![];
+            stale.position = 0;
             assert_eq!(
                 gateveriq::visual::solve(&a, "https://site.example", stale)
                     .unwrap_err()
@@ -1194,7 +1232,7 @@ async fn mandatory_visual_snapshot_and_receipt() {
             [&id],
         )
         .unwrap();
-    let ctx = core::random();
+    let ctx = context(&a, &id, &h);
     let offered = web_prepare(&a, &h, &id, &ctx, "mandatory").unwrap();
     assert!(offered["verification_token"].is_null());
     let c: core::Challenge = serde_json::from_value(offered["challenge"].clone()).unwrap();
@@ -1263,7 +1301,7 @@ async fn mandatory_visual_snapshot_and_receipt() {
 #[test]
 fn outcome_history_is_scoped_to_action() {
     let (_dir, a, id, h) = website_setup();
-    let ctx = core::random();
+    let ctx = context(&a, &id, &h);
     let initial = web_prepare(&a, &h, &id, &ctx, "scoped").unwrap();
     let challenge = initial["challenge"]["challenge_id"].as_str().unwrap();
     let db = a.db.lock().unwrap();
@@ -1281,7 +1319,7 @@ fn outcome_history_is_scoped_to_action() {
     .unwrap();
     drop(db);
     assert_eq!(
-        web_prepare(&a, &h, &id, &core::random(), "scoped").unwrap()["decision"],
+        web_prepare(&a, &h, &id, &context(&a, &id, &h), "scoped").unwrap()["decision"],
         "verify"
     );
     a.db.lock()
@@ -1289,67 +1327,111 @@ fn outcome_history_is_scoped_to_action() {
         .execute("UPDATE login_outcomes SET action='register'", [])
         .unwrap();
     assert_eq!(
-        web_prepare(&a, &h, &id, &core::random(), "scoped").unwrap()["decision"],
+        web_prepare(&a, &h, &id, &context(&a, &id, &h), "scoped").unwrap()["decision"],
         "additional_verification_required"
     );
 }
 
 #[test]
-fn migration_preserves_legacy_attempts_and_unknown_outcomes() {
+fn context_issuance_binding_and_fixed_deadline() {
     let (_dir, a, id, h) = setup();
-    let c = prepare(
+    let issued = create_context(
         &a,
         &h,
-        Prepare {
+        ContextRequest {
             integration_id: id.clone(),
             action: "register".into(),
-            context_id: "legacy".into(),
         },
     )
     .unwrap();
-    let db = a.db.lock().unwrap();
-    db.execute_batch("DROP TABLE used_contexts; DROP TABLE action_visual_policies; DROP INDEX outcome_action_history;
-        ALTER TABLE challenges DROP COLUMN visual_policy;
-        ALTER TABLE challenges DROP COLUMN verification_method;
-        ALTER TABLE login_outcomes DROP COLUMN action;
-        DELETE FROM schema_migrations WHERE version=2;").unwrap();
-    db.execute(
-        "INSERT INTO login_outcomes VALUES('deleted-challenge',?1,'hash',0,?2)",
-        rusqlite::params![id, now()],
-    )
-    .unwrap();
-    drop(db);
-    let upgraded = App::open(a.config.clone()).unwrap();
-    let db = upgraded.db.lock().unwrap();
-    let unknown: Option<String> = db
-        .query_row("SELECT action FROM login_outcomes", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(unknown, None);
-    let policy: String = db
-        .query_row(
-            "SELECT visual_policy FROM challenges WHERE id=?1",
-            [&c.challenge_id],
-            |r| r.get(0),
+    let context = issued["context_id"].as_str().unwrap();
+    assert_eq!(context.len(), 98);
+    assert_eq!(
+        a.db.lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM challenges", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let c = issue(&a, &id, &h, context);
+    assert_eq!(c.expires_at, issued["expires_at"].as_i64().unwrap());
+    assert_eq!(c.challenge_id, issue(&a, &id, &h, context).challenge_id);
+    let (other, secret) = a.create_integration("other", &["register".into()]).unwrap();
+    let mut other_headers = HeaderMap::new();
+    other_headers.insert("authorization", format!("Bearer {secret}").parse().unwrap());
+    let invalid = Prepare {
+        integration_id: other,
+        action: "register".into(),
+        context_id: context.into(),
+    };
+    assert_eq!(
+        prepare(&a, &other_headers, invalid).unwrap_err().1,
+        "INVALID_CONTEXT"
+    );
+    let invalid = Prepare {
+        integration_id: id.clone(),
+        action: "register".into(),
+        context_id: core::random(),
+    };
+    assert_eq!(prepare(&a, &h, invalid).unwrap_err().1, "INVALID_CONTEXT");
+    assert_eq!(
+        create_context(
+            &a,
+            &HeaderMap::new(),
+            ContextRequest {
+                integration_id: id.clone(),
+                action: "register".into()
+            }
         )
-        .unwrap();
-    assert_eq!(policy, "adaptive");
-    drop(db);
-    App::open(a.config.clone()).unwrap();
+        .unwrap_err()
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        create_context(
+            &a,
+            &h,
+            ContextRequest {
+                integration_id: id,
+                action: "admin".into()
+            }
+        )
+        .unwrap_err()
+        .1,
+        "ACTION_NOT_ALLOWED"
+    );
 }
 
 #[test]
-fn cleaned_context_cannot_be_recreated() {
-    let (_dir, a, id, h) = setup();
-    let p = || Prepare {
-        integration_id: id.clone(),
-        action: "register".into(),
-        context_id: "used".into(),
-    };
-    prepare(&a, &h, p()).unwrap();
-    a.db.lock()
-        .unwrap()
-        .execute("UPDATE challenges SET expires=0", [])
-        .unwrap();
-    a.cleanup().unwrap();
-    assert_eq!(prepare(&a, &h, p()).unwrap_err().1, "CONTEXT_ALREADY_USED");
+fn slider_tolerance_and_wrong_position_spends_budget() {
+    let (_dir, a, id, h) = website_setup();
+    let (_, offered, c) = visual_task(&a, &h, &id);
+    let mut correct = visual_answer(&a, &c, &offered);
+    correct.position += 3;
+    assert!(gateveriq::visual::solve(&a, "https://site.example", correct).is_ok());
+    let (_, offered, c) = visual_task(&a, &h, &id);
+    let mut wrong = visual_answer(&a, &c, &offered);
+    wrong.position -= 4;
+    assert_eq!(
+        gateveriq::visual::solve(&a, "https://site.example", wrong)
+            .unwrap_err()
+            .1,
+        "INVALID_VISUAL_SOLUTION"
+    );
+    let replacement =
+        gateveriq::visual::offer(&a, &c.challenge_id, "https://site.example").unwrap();
+    assert_eq!(replacement["visual"]["max_attempts"], 2);
+    assert_eq!(
+        replacement["visual"]["expires_at"],
+        offered["visual"]["expires_at"]
+    );
+    assert_ne!(
+        replacement["visual"]["background"],
+        offered["visual"]["background"]
+    );
+    assert_ne!(
+        replacement["visual"]["task_id"],
+        offered["visual"]["task_id"]
+    );
 }

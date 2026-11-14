@@ -10,15 +10,15 @@ const client = new GateveriqClient({integrationId: 'integration', secret: 'backe
     assert.equal(body.integration_id, 'integration');
     assert.equal(options.headers.Authorization, 'Bearer backend-only');
     calls.push({url: url.pathname, body});
-    return {ok: true, json: async () => ({decision: 'verify', valid: true, recorded: true})};
+    return {ok: true, json: async () => url.pathname.endsWith('/contexts') ? {context_id: 'C'.repeat(98)} : ({decision: 'verify', valid: true, recorded: true})};
   }});
 const pending = await client.prepareLogin({accountId: 'opaque', origin: 'https://site.example'});
-assert.match(pending.contextId, /^[\w-]{43}$/);
+assert.match(pending.contextId, /^[\w-]{98}$/);
 assert.notEqual(pending.contextId, pending.requestId);
 await client.consume({...pending, verificationToken: 'token'});
 await client.reportOutcome({...pending, success: false});
-assert.equal(calls[1].body.context_id, calls[0].body.context_id);
-assert.equal(calls[2].body.request_id, calls[1].body.request_id);
+assert.equal(calls[2].body.context_id, calls[1].body.context_id);
+assert.equal(calls[3].body.request_id, calls[2].body.request_id);
 await assert.rejects(client.reportOutcome({...pending, success: 'false'}), /boolean/);
 const failing = new GateveriqClient({fetchImpl: async () => ({ok: false, status: 403,
   json: async () => ({error: {code: 'UNAUTHORIZED'}})})});
@@ -26,14 +26,14 @@ await assert.rejects(failing.prepareLogin({}), error => error.code === 'UNAUTHOR
 
 const scope = {AbortController};
 runInNewContext(readFileSync(new URL('../web/widget.js', import.meta.url), 'utf8')
-  .replace(/^const workerURL.*$/m, '').replaceAll('export ', ''), scope);
+  .replace(/^const workerURL.*$/m, '').replace(/^import .*$/gm, '').replaceAll('export ', ''), scope);
 const result = await scope.verifyWebsiteAttempt(null, {decision: 'additional_verification_required'});
 assert.equal(result.decision, 'additional_verification_required');
 assert.equal(result.verification_token, undefined);
 await assert.rejects(scope.verifyWebsiteAttempt(null, {decision: 'unexpected'}), /Invalid website attempt/);
 console.log('Backend SDK binding, error propagation and pending additional check passed');
 
-const saved = client.createAttempt({accountId:'opaque', origin:'https://site.example', action:'email_verify'});
+const saved = await client.createAttempt({accountId:'opaque', origin:'https://site.example', action:'email_verify'});
 await client.prepareAttempt(saved);
 await client.prepareAttempt(saved);
 assert.deepEqual(calls.at(-1).body, calls.at(-2).body);

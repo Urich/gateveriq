@@ -2,6 +2,11 @@
 
 [English](README.md) | [Русский](README.ru.md)
 
+Operation contexts are issued by authenticated `POST /internal/v1/contexts` and
+expire after `challenge_ttl_seconds` from issuance. SDK `createAttempt` now requires
+`await`; persist its result before preparing a challenge. This revision requires
+a fresh database and does not accept old context formats. See [protocol](docs/protocol.md).
+
 Self-hosted experimental anti-bot verification for websites and independent applications.
 
 Gateveriq combines SHA-256 proof of work, optional browser/behavior checks,
@@ -9,8 +14,8 @@ persistent attempt history, account-bound login attempts and visual additional
 verification. Integrate a browser widget and a server API; no hosted verification
 provider is required at runtime.
 
-**Experimental MVP, not proof of human presence.** Client signals can be forged and
-the small illustration bank can be memorized by bots. See [security](docs/security.md).
+**Experimental MVP, not proof of human presence.** Slider puzzles can be automated and
+client signals can be forged. See [security](docs/security.md).
 
 ## Requirements
 
@@ -57,10 +62,10 @@ Open **http://127.0.0.1:8090**, use **Run verification**, then **Confirm verific
 The public API is on `127.0.0.1:9080`; the internal API is on `127.0.0.1:9081`.
 This demo is a local test harness, not a production login backend.
 
-To see illustrations, check **Simulate a failed password** and complete five
-verifications. The next attempt shows images. For a shorter test, set
+To try the slider, check **Simulate a failed password** and complete five
+verifications. The next attempt shows a slider puzzle. For a shorter test, set
 `account_failure_limit = 1` under the single `[website]` section of `config.toml`
-and restart the Rust server. Wrong image answers change the object and board
+and restart the Rust server. Wrong slider positions generate a new puzzle
 without resetting the three-answer budget or deadline. After upgrades, restart
 the server and reload the browser with Ctrl+F5.
 
@@ -73,11 +78,11 @@ cargo run --locked -- integration-create --name website --actions login --origin
 ```
 
 The backend creates an account-bound attempt. The browser submits its proof directly
-to Gateveriq; the widget shows images when risk requires an extra check. The backend
+to Gateveriq; the widget shows a slider when risk requires an extra check. The backend
 consumes the token before checking credentials, reports the actual login outcome
 and executes its operation once. Keep the integration secret on the backend.
 
-Serve `web/widget.js` and `web/worker.js` on your website. The optional Node.js
+Serve `web/widget.js`, `web/slider.js` and `web/worker.js` on your website. The optional Node.js
 backend client is `sdk/server.mjs`. [Complete examples](docs/website-integration.md).
 
 ## Modes and history
@@ -96,9 +101,11 @@ the retained history trigger extra verification. History lasts 24 hours by defau
 Configure thresholds under `[website]`. Successes do not erase failures.
 Forwarded-IP headers are ignored.
 
-The local visual bank contains 24 illustrations in six categories. Boards have 16
-distinct pictures, up to three wrong answers and a maximum 120-second lifetime.
-The bank is a style prototype, not a production CAPTCHA.
+Additional verification uses a compact slider with locally generated random landscapes.
+The 304 px widget supports mouse, touch and keyboard, scales to narrow containers,
+and offers light, dark, automatic and custom themes. Three wrong answers exhaust
+the budget; the maximum lifetime is 120 seconds. This is an experimental check,
+not a production-qualified CAPTCHA. [Embedding and themes](docs/website-integration.md#slider-themes-and-embedding).
 
 ## Documentation
 
@@ -110,7 +117,7 @@ The bank is a style prototype, not a production CAPTCHA.
 - [Deployment and configuration](docs/deployment.md)
 - [Security and limitations](docs/security.md)
 - [Testing and troubleshooting](docs/testing.md)
-- [Illustrations and generation prompts](assets/visual/README.md)
+- [Historical illustrations and generation prompts](assets/visual/README.md)
 
 ## Development
 

@@ -20,7 +20,7 @@ python tests/e2e.py
 
 Use `python3` where needed. Rust tests cover tokens, isolation, bindings, concurrent
 requests, persistent history, outcomes, origins, image assets/rotation, expiry and
-answer exhaustion. JavaScript tests cover the Worker, observations, image selection,
+answer exhaustion. JavaScript tests cover the Worker, observations, slider interaction,
 cancellation/retries and SDK. HTTP/CLI tests use real ports, restart the service,
 decode PNGs and complete a login after an incorrect visual answer.
 These checks validate rules, not real-world bot detection quality.
@@ -81,7 +81,7 @@ there is no production authentication/session implementation.
 8. Wrong image answers change category/task ID, preserve the deadline and spend
    the common budget. Old task IDs cannot answer replacement boards.
 9. Expired/exhausted visual tasks cannot issue tokens; cancellation stops UI work.
-10. Test actual desktop/mobile browsers and keyboard selection separately.
+10. Test actual desktop/mobile browsers and keyboard slider control separately.
 
 ## Troubleshooting
 

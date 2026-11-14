@@ -86,8 +86,6 @@ impl App {
         let db = Connection::open(&config.database)?;
         db.busy_timeout(std::time::Duration::from_secs(2))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-        CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY);
-        INSERT OR IGNORE INTO schema_migrations VALUES(1);
         CREATE TABLE IF NOT EXISTS integrations(id TEXT PRIMARY KEY,name TEXT NOT NULL,secret_hash TEXT NOT NULL, previous_hash TEXT, previous_until INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS history_policies(integration_id TEXT PRIMARY KEY REFERENCES integrations(id));
         CREATE TABLE IF NOT EXISTS attempt_history(integration_id TEXT NOT NULL REFERENCES integrations(id),source TEXT NOT NULL,minute INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,failures INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(integration_id,source,minute));
@@ -95,29 +93,13 @@ impl App {
         CREATE TABLE IF NOT EXISTS behavior_policies(integration_id TEXT PRIMARY KEY REFERENCES integrations(id));
         CREATE TABLE IF NOT EXISTS browser_policies(integration_id TEXT PRIMARY KEY REFERENCES integrations(id));
         CREATE TABLE IF NOT EXISTS actions(integration_id TEXT NOT NULL REFERENCES integrations(id),action TEXT NOT NULL, PRIMARY KEY(integration_id,action));
-        CREATE TABLE IF NOT EXISTS challenges(id TEXT PRIMARY KEY,integration_id TEXT NOT NULL REFERENCES integrations(id),action TEXT NOT NULL,context TEXT NOT NULL,salt TEXT NOT NULL,difficulty INTEGER NOT NULL,expires INTEGER NOT NULL,solved_at INTEGER,token_hash TEXT UNIQUE,token_expires INTEGER,consumed_at INTEGER,request_id TEXT, UNIQUE(integration_id,action,context));
+        CREATE TABLE IF NOT EXISTS challenges(id TEXT PRIMARY KEY,integration_id TEXT NOT NULL REFERENCES integrations(id),action TEXT NOT NULL,context TEXT NOT NULL,salt TEXT NOT NULL,difficulty INTEGER NOT NULL,expires INTEGER NOT NULL,solved_at INTEGER,token_hash TEXT UNIQUE,token_expires INTEGER,consumed_at INTEGER,request_id TEXT,visual_policy TEXT NOT NULL DEFAULT 'adaptive',verification_method TEXT NOT NULL DEFAULT 'pow', UNIQUE(integration_id,action,context));
         CREATE INDEX IF NOT EXISTS challenge_expiry ON challenges(expires);
         CREATE INDEX IF NOT EXISTS challenge_integration ON challenges(integration_id,expires);")?;
-        crate::website::migrate(&db)?;
-        crate::visual::migrate(&db)?;
-        let upgraded: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=2)",
-            [],
-            |r| r.get(0),
-        )?;
-        if !upgraded {
-            db.execute_batch("BEGIN IMMEDIATE;
-                ALTER TABLE challenges ADD COLUMN visual_policy TEXT NOT NULL DEFAULT 'adaptive';
-                ALTER TABLE challenges ADD COLUMN verification_method TEXT NOT NULL DEFAULT 'pow';
-                ALTER TABLE login_outcomes ADD COLUMN action TEXT;
-                UPDATE login_outcomes SET action=(SELECT action FROM challenges WHERE id=challenge_id);
-                CREATE TABLE action_visual_policies(integration_id TEXT NOT NULL,action TEXT NOT NULL,visual TEXT NOT NULL CHECK(visual IN ('adaptive','always')),PRIMARY KEY(integration_id,action),FOREIGN KEY(integration_id,action) REFERENCES actions(integration_id,action));
-                CREATE TABLE used_contexts(integration_id TEXT NOT NULL,action TEXT NOT NULL,context TEXT NOT NULL,PRIMARY KEY(integration_id,action,context));
-                INSERT INTO used_contexts SELECT integration_id,action,context FROM challenges;
-                CREATE INDEX outcome_action_history ON login_outcomes(integration_id,account_hash,action,created);
-                INSERT INTO schema_migrations VALUES(2);
-                COMMIT;")?;
-        }
+        crate::website::init_schema(&db)?;
+        crate::visual::init_schema(&db)?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS action_visual_policies(integration_id TEXT NOT NULL,action TEXT NOT NULL,visual TEXT NOT NULL CHECK(visual IN ('adaptive','always')),PRIMARY KEY(integration_id,action),FOREIGN KEY(integration_id,action) REFERENCES actions(integration_id,action));
+            CREATE INDEX IF NOT EXISTS outcome_action_history ON login_outcomes(integration_id,account_hash,action,created);")?;
         Ok(Arc::new(Self {
             db: Mutex::new(db),
             config,
@@ -276,11 +258,57 @@ fn challenge(row: &rusqlite::Row) -> rusqlite::Result<Challenge> {
         expires_at: row.get(3)?,
     })
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextRequest {
+    pub integration_id: String,
+    pub action: String,
+}
+/// Issue an expiring context without retaining issuance state in the database.
+pub fn create_context(
+    app: &Shared,
+    headers: &HeaderMap,
+    p: ContextRequest,
+) -> Result<Value, Error> {
+    app.auth(headers, &p.integration_id)?;
+    if !valid(&p.action) {
+        return Err(bad("INVALID_REQUEST"));
+    }
+    app.limit(format!("context:{}", p.integration_id))?;
+    let allowed: bool = app
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM actions WHERE integration_id=?1 AND action=?2)",
+            params![p.integration_id, p.action],
+            |r| r.get(0),
+        )
+        .map_err(db_error)?;
+    if !allowed {
+        return Err(Error(StatusCode::FORBIDDEN, "ACTION_NOT_ALLOWED"));
+    }
+    let expires = now() + app.config.challenge_ttl_seconds;
+    Ok(
+        json!({"context_id":crate::context::issue(&app.key, &p.integration_id, &p.action, expires), "expires_at":expires}),
+    )
+}
+async fn issue_context(
+    State(a): State<Shared>,
+    ConnectInfo(ip): ConnectInfo<SocketAddr>,
+    h: HeaderMap,
+    Json(p): Json<ContextRequest>,
+) -> Result<Json<Value>, Error> {
+    a.limit(format!("internal:{}", ip.ip()))?;
+    create_context(&a, &h, p).map(Json)
+}
 pub fn prepare(app: &Shared, headers: &HeaderMap, p: Prepare) -> Result<Challenge, Error> {
     app.auth(headers, &p.integration_id)?;
     if !valid(&p.action) || !valid(&p.context_id) {
         return Err(bad("INVALID_REQUEST"));
     }
+    let context_expires =
+        crate::context::verify(&app.key, &p.integration_id, &p.action, &p.context_id, now())?;
     app.limit(format!("integration:{}", p.integration_id))?;
     let mut db = app.db.lock().unwrap();
     let tx = db.transaction().map_err(db_error)?;
@@ -302,10 +330,6 @@ pub fn prepare(app: &Shared, headers: &HeaderMap, p: Prepare) -> Result<Challeng
             Err(bad("CHALLENGE_EXPIRED"))
         };
     }
-    let used: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM used_contexts WHERE integration_id=?1 AND action=?2 AND context=?3)", params![p.integration_id,p.action,p.context_id], |r| r.get(0)).map_err(db_error)?;
-    if used {
-        return Err(bad("CONTEXT_ALREADY_USED"));
-    }
     let count: u32 = tx
         .query_row(
             "SELECT COUNT(*) FROM challenges WHERE integration_id=?1 AND expires>?2",
@@ -321,14 +345,9 @@ pub fn prepare(app: &Shared, headers: &HeaderMap, p: Prepare) -> Result<Challeng
         algorithm: "sha256-pow-v1".into(),
         salt: core::random(),
         difficulty_bits: app.config.difficulty_bits,
-        expires_at: now() + app.config.challenge_ttl_seconds,
+        expires_at: context_expires,
     };
     tx.execute("INSERT INTO challenges(id,integration_id,action,context,salt,difficulty,expires) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![c.challenge_id,p.integration_id,p.action,p.context_id,c.salt,c.difficulty_bits,c.expires_at]).map_err(db_error)?;
-    tx.execute(
-        "INSERT INTO used_contexts VALUES(?1,?2,?3)",
-        params![p.integration_id, p.action, p.context_id],
-    )
-    .map_err(db_error)?;
     tx.execute("UPDATE challenges SET visual_policy=COALESCE((SELECT visual FROM action_visual_policies WHERE integration_id=?1 AND action=?2),'adaptive') WHERE id=?3", params![p.integration_id,p.action,c.challenge_id]).map_err(db_error)?;
     tx.commit().map_err(db_error)?;
     Ok(c)
@@ -580,9 +599,19 @@ pub fn routers(a: Shared) -> (Router, Router) {
                 )
             }),
         )
+        .route(
+            "/slider.js",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/javascript")],
+                    include_str!("../web/slider.js"),
+                )
+            }),
+        )
         .layer(DefaultBodyLimit::max(4096))
         .with_state(a.clone());
     let internal = Router::new()
+        .route("/internal/v1/contexts", post(issue_context))
         .route("/internal/v1/challenges", post(issue))
         .route("/internal/v1/verifications/consume", post(check))
         .layer(DefaultBodyLimit::max(4096))

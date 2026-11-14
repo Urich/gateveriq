@@ -50,9 +50,11 @@ with tempfile.TemporaryDirectory() as directory:
             except OSError:
                 time.sleep(.05)
         process.terminate();process.wait();raise RuntimeError('Server did not start')
+    def context(action):
+        return post(internal, '/internal/v1/contexts', {'integration_id':integration['integration_id'], 'action':action}, True)['context_id']
     process=launch()
     try:
-        prepared={'integration_id':integration['integration_id'],'action':'test','context_id':'e2e-context'}
+        prepared={'integration_id':integration['integration_id'],'action':'test','context_id':context('test')}
         challenge=post(internal,'/internal/v1/challenges',prepared,True)
         assert challenge == post(internal,'/internal/v1/challenges',prepared,True)
         file=Path(directory)/'challenge.json';file.write_text(json.dumps(challenge))
@@ -67,8 +69,8 @@ with tempfile.TemporaryDirectory() as directory:
         except urllib.error.HTTPError as error:
             assert json.load(error)['error']['code']=='TOKEN_ALREADY_CONSUMED'
         integration = json.loads(cli('integration-create', '--name', 'website', '--actions', 'login,register', '--origins', 'http://127.0.0.1:8090'))
-        context = secrets.token_urlsafe(32)
-        attempt = {'integration_id':integration['integration_id'], 'action':'login', 'context_id':context, 'account_id':'opaque-account', 'origin':'http://127.0.0.1:8090'}
+        login_context = context('login')
+        attempt = {'integration_id':integration['integration_id'], 'action':'login', 'context_id':login_context, 'account_id':'opaque-account', 'origin':'http://127.0.0.1:8090'}
         prepared_web = post(internal, '/internal/v1/web/attempts', attempt, True)
         assert prepared_web['decision'] == 'verify'
         challenge = prepared_web['challenge']
@@ -79,22 +81,23 @@ with tempfile.TemporaryDirectory() as directory:
         process.terminate();process.wait();process=launch()
         verified = post(public, '/public/v1/web/solutions', solution, origin='http://127.0.0.1:8090')
         cli('integration-visual-policy', '--id', integration['integration_id'], '--action', 'register', '--visual', 'always')
-        mandatory = {'integration_id':integration['integration_id'], 'action':'register', 'context_id':base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode(), 'account_id':'registration-account', 'origin':'http://127.0.0.1:8090'}
+        mandatory = {'integration_id':integration['integration_id'], 'action':'register', 'context_id':context('register'), 'account_id':'registration-account', 'origin':'http://127.0.0.1:8090'}
         registration = post(internal, '/internal/v1/web/attempts', mandatory, True)
         assert registration['visual'] and registration['verification_token'] is None
         assert post(internal, '/internal/v1/web/attempts', mandatory, True) == registration
-        consume = {'integration_id':integration['integration_id'], 'action':'login', 'context_id':context, 'request_id':'website-login', 'verification_token':verified['verification_token']}
+        consume = {'integration_id':integration['integration_id'], 'action':'login', 'context_id':login_context, 'request_id':'website-login', 'verification_token':verified['verification_token']}
         assert post(internal, '/internal/v1/verifications/consume', consume, True)['valid']
         outcome = {key:consume[key] for key in ['integration_id','action','context_id','request_id']}
         outcome['success'] = False
         assert post(internal, '/internal/v1/web/outcomes', outcome, True)['recorded']
         assert post(internal, '/internal/v1/web/outcomes', outcome, True)['recorded']
-        attempt['context_id'] = secrets.token_urlsafe(32)
+        attempt['context_id'] = context('login')
         extra = post(internal, '/internal/v1/web/attempts', attempt, True)
         assert extra['decision'] == 'additional_verification_required' and extra['verification_token'] is None
         visual = extra['visual']
-        assert len(visual['images']) == 16 and 'answer' not in visual
-        for encoded in [visual['reference'], *visual['images']]:
+        assert visual['kind'] == 'slider_puzzle' and 'answer' not in visual and 'position' not in visual
+        for field, expected in [('background',(280,140)),('piece',(40,40))]:
+            encoded = visual[field]
             png = base64.b64decode(encoded.split(',', 1)[1])
             assert png[:8] == b'\x89PNG\r\n\x1a\n'
             offset = 8
@@ -108,38 +111,38 @@ with tempfile.TemporaryDirectory() as directory:
                 assert zlib.crc32(kind+data) == crc
                 if kind == b'IHDR':
                     width, height = struct.unpack('>II', data[:8])
-                    assert (width, height) == (160, 160)
-                    assert data[8:10] == bytes([8, 2])
+                    assert (width, height) == expected
+                    assert data[8:10] == bytes([8, 6])
                 if kind == b'IDAT':
                     compressed.extend(data)
                 offset += 12+size
             raw = zlib.decompress(compressed)
-            assert len(raw) == height*(width*3+1)
-            assert all(raw[y*(width*3+1)] <= 4 for y in range(height))
+            assert len(raw) == height*(width*4+1)
+            assert all(raw[y*(width*4+1)] <= 4 for y in range(height))
         # Privileged test harness reads the server answer; the public response never includes it.
         with closing(sqlite3.connect(Path(directory)/'gateveriq.sqlite3')) as db:
             mask = db.execute('SELECT answer FROM visual_tasks WHERE task_id=?', [visual['task_id']]).fetchone()[0]
         file.write_text(json.dumps(extra['challenge']))
         proof = json.loads(cli('solve', '--challenge', str(file)))
-        proof.update(task_id=visual['task_id'], selected=[])
+        proof.update(task_id=visual['task_id'], position=0)
         try:
             post(public, '/public/v1/web/visual/solutions', proof, origin='http://127.0.0.1:8090')
-            raise AssertionError('Incorrect visual selection accepted')
+            raise AssertionError('Incorrect slider position accepted')
         except urllib.error.HTTPError as error:
             assert error.code == 400
             replacement = json.load(error)
         assert replacement['error']['code'] == 'INVALID_VISUAL_SOLUTION'
         rotated = replacement['visual']
         assert rotated['task_id'] != visual['task_id']
-        assert rotated['reference'] != visual['reference']
+        assert rotated['background'] != visual['background']
         assert rotated['expires_at'] == visual['expires_at'] and rotated['max_attempts'] == 2
         visual = rotated
         with closing(sqlite3.connect(Path(directory)/'gateveriq.sqlite3')) as db:
             mask = db.execute('SELECT answer FROM visual_tasks WHERE task_id=?', [visual['task_id']]).fetchone()[0]
-        proof.update(task_id=visual['task_id'], selected=[i for i in range(16) if mask & (1 << i)])
+        proof.update(task_id=visual['task_id'], position=mask)
         verified = post(public, '/public/v1/web/visual/solutions', proof, origin='http://127.0.0.1:8090')
         consume.update(context_id=attempt['context_id'], request_id='visual-login', verification_token=verified['verification_token'])
         assert post(internal, '/internal/v1/verifications/consume', consume, True)['valid']
-        print('HTTP/CLI, website login, visual completion, PNG decoding, risk and restart tests passed')
+        print('HTTP/CLI, website login, slider completion, RGBA PNG decoding, risk and restart tests passed')
     finally:
         process.terminate();process.wait()

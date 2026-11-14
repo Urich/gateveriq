@@ -4,14 +4,43 @@
 
 All requests use JSON, UTF-8 and a maximum body size of 4096 bytes. Unknown JSON fields are rejected. Timestamps are Unix seconds in UTC. The server clock is authoritative. The request limit does not cap image response size.
 
-IDs, salt and tokens encode 32 bytes in canonical unpadded Base64URL (43 characters). Nonces encode exactly 8 bytes (11 characters). Action, context and request IDs are 1–128 ASCII letters, digits or characters `_-.:`.
+IDs, salt and tokens encode 32 bytes in canonical unpadded Base64URL (43 characters). Nonces encode exactly 8 bytes (11 characters). Action and request IDs are 1–128 ASCII letters, digits or characters `_-.:`. Context IDs use the signed format below.
+
+## Issue an operation context
+
+First call authenticated `POST /internal/v1/contexts`:
+
+```json
+{"integration_id":"<id>","action":"register"}
+```
+
+Response: `{"context_id":"<signed-context>","expires_at":1800000000}`.
+Save the context on your backend before creating a challenge. Issuance writes no
+operation state. The action must be allowed and the integration active.
+
+The context is 98 characters of canonical unpadded Base64URL encoding 73 bytes:
+version byte `1`, expiry as an 8-byte big-endian signed Unix timestamp, 32 random
+bytes, then a 32-byte HMAC-SHA256 tag. The MAC uses the private service key, domain
+`gateveriq:context:v1:`, then integration ID, action, and the first 41 context bytes,
+each prefixed by its byte length encoded as unsigned 64-bit big-endian.
+Clients must treat the complete string as opaque.
+
+Lifetime is `challenge_ttl_seconds`, starting at context issuance. Challenge
+expiry equals context expiry; retries never extend it. Forged, noncanonical,
+wrong-integration or wrong-action contexts return `INVALID_CONTEXT`; authentic
+expired contexts return `CONTEXT_EXPIRED`, even after database cleanup/restart.
+No permanent used-context ledger is required. Token expiry and exact consume
+receipt retries retain their own existing deadlines.
+
+This is a breaking change: arbitrary operation IDs and random 32-byte contexts
+are rejected. Use a fresh database; no upgrade migrations are provided.
 
 ## Create a challenge
 
 `POST /internal/v1/challenges`, authenticated by `Authorization: Bearer <integration_secret>`:
 
 ```json
-{"integration_id":"<id>","action":"register","context_id":"<unique-operation-id>"}
+{"integration_id":"<id>","action":"register","context_id":"<signed-context>"}
 ```
 
 Response:
@@ -20,7 +49,7 @@ Response:
 {"challenge_id":"<id>","algorithm":"sha256-pow-v1","salt":"<salt>","difficulty_bits":18,"expires_at":1800000000}
 ```
 
-Reusing the same integration/action/context returns the original unexpired challenge. Expired contexts are rejected while retained. Always use a new operation ID for a genuinely new attempt.
+Reusing the same integration/action/context returns the original unexpired challenge. Expired contexts are rejected even after their database records are removed. Always use a new operation ID for a genuinely new attempt.
 
 ## Compute a solution
 
@@ -129,7 +158,7 @@ forwarded header is accepted as identity. Thresholds are configurable under `[we
 See [website integration](website-integration.md) for the complete flow.
 
 - Authenticated `POST /internal/v1/web/attempts`: `integration_id`, `action`,
-  `context_id` (canonical random 32-byte base64url), `account_id` (opaque 1-128
+  `context_id` (server-issued signed context), `account_id` (opaque 1-128
   characters, no controls), `origin` (exact configured origin).
   Returns `{decision:"verify",challenge:{...}}` or
   `{decision:"additional_verification_required",reason:"risk_policy",verification_token:null}`.
@@ -152,33 +181,44 @@ through the legacy API cannot obtain a website token. Origins are canonical HTTP
 origins (HTTP only for loopback development), not arbitrary URLs or wildcard domains.
 CORS/Origin is a browser policy, not proof against an HTTP bot.
 
-### Visual additional verification
+### Slider additional verification
 
-Additional-verification responses now include `challenge` and `visual`:
-`task_id`, `expires_at`, `instruction`, `reference` (PNG data URL), `images`
-(16 PNG data URLs in display order) and `max_attempts` (remaining budget, initially 3). There is no answer field.
+Additional-verification responses include `challenge` and a `visual` slider task:
+`kind: "slider_puzzle"`, `task_id`, `expires_at`, `instruction_key: "slide_piece"`,
+`background` (280×140 RGBA PNG data URL), `piece` (40×40 RGBA PNG data URL),
+`width: 280`, `height: 140`, `piece_size: 40`, `piece_y`, `max_position: 240`,
+and `max_attempts` (remaining budget, initially 3). The correct horizontal position
+is stored only on the server. A procedural landscape is generated for each task;
+there is no static category bank or external image service.
 
-Public `POST /public/v1/web/visual/solutions` accepts `challenge_id`, `task_id`,
-`nonce` (original PoW), `selected` (distinct zero-based image indexes, 0..15).
-Origin must match the original attempt and allowlist. OPTIONS preflight is supported.
-Success returns the normal verification token. The backend must still consume it.
+Public `POST /public/v1/web/visual/solutions` accepts:
+
+```json
+{"challenge_id":"<id>","task_id":"<task>","nonce":"<original-pow>","position":137}
+```
+
+`position` is an integer 0–240 in original image pixels, independent of CSS scaling.
+The server accepts an absolute distance of at most 3 pixels from the answer.
+The old `selected` array is rejected. Origin must match the attempt and allowlist;
+OPTIONS is supported. Success returns a token for backend consumption, with method
+`pow_visual`. The method name remains unchanged for slider puzzles.
 
 400 errors: INVALID_VISUAL_SOLUTION, VISUAL_NOT_FOUND, VISUAL_EXPIRED,
-INVALID_SOLUTION, CHALLENGE_EXPIRED, INVALID_REQUEST. After three wrong answers,
-subsequent attempts return 429 VISUAL_ATTEMPTS_EXHAUSTED. Reissuing the same
-attempt does not reset this state. A correct retry before token consumption returns
-the same token; a consumed token cannot be reissued. Once assigned, the visual task
-cannot be bypassed through the normal solution endpoint. Visual tasks and their
-state survive restarts and are deleted with their expired parent challenges.
+INVALID_SOLUTION, CHALLENGE_EXPIRED, INVALID_REQUEST. Out-of-range positions are
+invalid requests. An in-range incorrect position spends one answer and returns
+HTTP 400 with `error.code = INVALID_VISUAL_SOLUTION` and a replacement `visual`.
+The image, cutout position and task ID are regenerated. The original deadline and
+remaining budget are preserved; stale task IDs fail. The final wrong answer
+returns 429 VISUAL_ATTEMPTS_EXHAUSTED with no replacement.
 
-On an incorrect visual selection with remaining attempts, HTTP 400 includes
-`error.code = INVALID_VISUAL_SOLUTION` and a replacement `visual` object. The next
-object category differs, the task ID changes and old task IDs become invalid.
-`max_attempts` reports the remaining answer budget. The original expiry and login
-binding remain unchanged. At the last wrong answer HTTP returns 429
-VISUAL_ATTEMPTS_EXHAUSTED, with no replacement task. Re-fetching an offer returns
-the current task and does not reset its budget. For a new login attempt, the last
-retained visual category for the same account/integration is also excluded.
+Re-fetching an offer returns the current task without resetting its budget.
+Correct retries return the same token until consumption; consumed tokens cannot
+be reissued. Assigned puzzles cannot be bypassed through the ordinary solution
+endpoint. Puzzle state survives restarts and is deleted with expired challenges.
+Expiry is at most 120 seconds and never later than challenge expiry.
+
+Image matching and blind guessing remain possible. A completed slider is not
+proof of human presence; retain PoW, backend policy and request limits.
 
 ## Verification method and action policy
 

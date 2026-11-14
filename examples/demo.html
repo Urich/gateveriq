@@ -6,6 +6,7 @@
 <p><small>This proof-of-work check increases automation cost. It does not prove human presence.</small></p>
 <div id="status" role="status" aria-live="polite">Ready</div>
 <label><input id="failed" type="checkbox"> Simulate a failed password (website mode)</label><br>
+<p><label>Widget theme <select id="theme"><option value="auto">Auto</option><option value="light">Light</option><option value="dark">Dark</option><option value="custom">Custom purple</option></select></label></p>
 <button id="start">Run verification</button><button id="cancel" disabled>Cancel</button>
 <script type="module">
 import {GateveriqWidget,verifyWebsiteAttempt,showLoading} from '/widget.js';
@@ -16,7 +17,7 @@ cancel.onclick=()=>{controller?.abort();widget.cancel();};
 async function post(path,body,signal){const stopLoading=showLoading(status,path==='/prepare'?'Preparing verification...':'Completing verification...');try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal});const data=await r.json();if(!r.ok)throw Error(data.error?.code||data.error||'Request failed');return data;}finally{stopLoading();}}
 start.onclick=async()=>{
  start.disabled=true;cancel.disabled=false;controller=new AbortController();status.textContent='Preparing…';const started=performance.now();
- try{const p=await post('/prepare',{failed_login:document.querySelector('#failed').checked},controller.signal);let token;if(p.website){const result=await verifyWebsiteAttempt(status,p,{serviceURL:'http://127.0.0.1:9080',signal:controller.signal});if(result.decision!=='verified')throw Error('Additional verification required');token=result.verification_token;}else{token=await widget.verify(p.challenge,{solutionURL:'/public/v1/solutions',signal:controller.signal});}const r=await post('/complete',{operation_id:p.operation_id,verification_token:token},controller.signal);status.textContent=`${r.message} (${((performance.now()-started)/1000).toFixed(1)} s)`;}
+ try{const p=await post('/prepare',{failed_login:document.querySelector('#failed').checked},controller.signal);let token;if(p.website){const result=await verifyWebsiteAttempt(status,p,{serviceURL:'http://127.0.0.1:9080',signal:controller.signal,theme:document.querySelector('#theme').value==='custom'?{preset:'dark',accent:'#c4a7ff',radius:'10px'}:document.querySelector('#theme').value});if(result.decision!=='verified')throw Error('Additional verification required');token=result.verification_token;}else{token=await widget.verify(p.challenge,{solutionURL:'/public/v1/solutions',signal:controller.signal});}const r=await post('/complete',{operation_id:p.operation_id,verification_token:token},controller.signal);status.textContent=`${r.message} (${((performance.now()-started)/1000).toFixed(1)} s)`;}
  catch(e){status.textContent=e.name==='AbortError'?'Cancelled':e.message;}
  finally{start.disabled=false;cancel.disabled=true;}
 };

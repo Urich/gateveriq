@@ -5,10 +5,10 @@ import {GateveriqClient} from '../sdk/server.mjs';
 export class RegistrationFlow {
   constructor(gate) { this.gate = gate; this.operations = new Map(); }
 
-  // Save the operation BEFORE network I/O; resume it after network failures.
-  create(owner, accountId, origin, action = 'register') {
+  // Save the issued context BEFORE preparation; resume preparation after failures.
+  async create(owner, accountId, origin, action = 'register') {
     if (!['register', 'email_verify'].includes(action)) throw Error('Invalid action');
-    const pending = this.gate.createAttempt({accountId, origin, action});
+    const pending = await this.gate.createAttempt({accountId, origin, action});
     this.operations.set(pending.requestId, {owner, pending});
     return pending.requestId;
   }

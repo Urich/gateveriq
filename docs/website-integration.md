@@ -93,7 +93,7 @@ AbortSignal, discard the token and prepare a new attempt. The backend must
 consume the token before performing the action. Keep separate rate limits for
 actions such as posting comments and sending email.
 
-Serve `web/widget.js` and `web/worker.js` as static files on your website, in the same
+Serve `web/widget.js`, `web/slider.js` and `web/worker.js` as static files on your website, in the same
 directory. The Worker is created on the website origin; do not import the widget
 directly from a different origin. Its solution request goes directly to Gateveriq.
 
@@ -129,22 +129,19 @@ also return the latter with HTTP 403 if history or browser/behavior policy raise
 risk. Ordinary invalid proofs, missing fields and exhausted throughput limits
 remain errors. The browser helper handles both prepare-time and submit-time decisions.
 
-The visual task asks users to select all objects of the same type as a reference illustration from
-16 PNG tiles. The bundled bank has 24 illustrations across six categories (cats,
-dogs, bicycles, cars, potted flowering plants and trees), generated offline and
-embedded in the binary. Each board contains distinct pictures, in random order. Correct answers remain in SQLite and are never
-sent as labels, filenames or vector metadata. The task expires after at most 120
-seconds (and no later than the original challenge), allows at most three answer attempts before success,
-and cannot be refreshed to reset its budget. After a wrong answer, the widget
-receives a new object category and board with a new task ID. The original
-deadline and remaining answer budget are preserved. Correct completion also requires the
-original PoW solution and produces a token bound to the same login attempt. It
-replaces the browser/behavior and IP-history risk rejection for that attempt only;
-ordinary throughput limits remain. It does not erase account or source history.
+The visual task is a compact slider puzzle with a fresh procedural landscape.
+Users move a 40×40 fragment across a 280×140 image to fit its cutout. Correct
+coordinates remain server-side. A wrong answer generates a new image and task ID,
+spending one of three attempts without extending the deadline (at most 120 seconds).
+Completion still requires the original PoW and a bound backend consumption.
+The slider replaces browser/behavior and IP-history risk rejection for that attempt
+only, preserving ordinary throughput limits and account/source history.
 
-The small static illustration bank is an experimental visual prototype. Its images
-can be memorized or recognized by bots; it is not an improvement in bot resistance. It is not a production-quality CAPTCHA corpus. Keyboard
-selection is supported, but no nonvisual alternative exists yet.
+The widget uses a native range input: drag with mouse/touch, or move with arrow
+keys and confirm with Enter or the Check button. No nonvisual challenge is provided.
+Random scenes remove the old static-image hash lookup, but do not establish
+resistance to computer vision or blind guessing. Treat the slider as an experimental
+additional check and retain backend limits.
 
 The account HMAC, exact origin and random attempt context are bound server-side.
 Tokens remain short-lived and one-use, with exact retries only for the same request
@@ -214,22 +211,22 @@ check the snapshot, even when no visual task exists yet.
 The existing endpoints accept every allowed action:
 
 ```json
-{"integration_id":"ID","action":"register","context_id":"32-byte-base64url","account_id":"opaque-id","origin":"https://neruvalo.example"}
+{"integration_id":"ID","action":"register","context_id":"signed-context","account_id":"opaque-id","origin":"https://neruvalo.example"}
 ```
 
 POST this to `/internal/v1/web/attempts` using backend bearer authentication.
 For always, prepare returns `decision: additional_verification_required`,
 `challenge`, `visual`, and `verification_token: null`. Pass this payload to
-`verifyWebsiteAttempt`. The widget solves PoW and submits images to
+`verifyWebsiteAttempt`. The widget solves PoW and submits the slider position to
 `/public/v1/web/visual/solutions`; success returns `verification_token` and
 `expires_at`. Consume it through `/internal/v1/verifications/consume`:
 
 ```json
-{"integration_id":"ID","action":"register","context_id":"32-byte-base64url","request_id":"stable-request-id","verification_token":"token"}
+{"integration_id":"ID","action":"register","context_id":"signed-context","request_id":"stable-request-id","verification_token":"token"}
 ```
 
 ```json
-{"valid":true,"action":"register","context_id":"32-byte-base64url","verification_method":"pow_visual"}
+{"valid":true,"action":"register","context_id":"signed-context","verification_method":"pow_visual"}
 ```
 
 Methods are `pow` and `pow_visual`, describing actual token issuance, not the
@@ -237,8 +234,8 @@ configured policy. Exact consume retries return the same fields during receipt
 retention even after token/task expiry. A different request ID is rejected.
 Neruvalo should require `pow_visual` for register, email_verify and unlock.
 
-Use `createAttempt` to generate identifiers, save them before network I/O, then
-call `prepareAttempt(saved)`. Repeat with the same saved values after a network
+Use `const saved = await gate.createAttempt(options)` to obtain a signed context.
+Persist it before calling `prepareAttempt(saved)`. `createAttempt` is asynchronous. Repeat with the same saved values after a network
 failure; return the saved attempt on page reload. `prepareLogin` remains a
 compatible wrapper; `reportOutcome` already accepts any action. The SDK returns
 all consume fields. See [registration example](../examples/registration.mjs).
@@ -253,37 +250,47 @@ does not erase risk history. Transport-source/IP risk remains shared across acti
 Account lockout, emails, OPAQUE, and a protected desktop status channel belong to
 Neruvalo; no passwords, codes, email addresses or recovery links go to GateVeriq.
 
-### Upgrade
+### Context lifecycle
 
-Back up the SQLite database and token key, stop the old server, replace the binary,
-and start it normally. Startup transactionally migrates schema version 1 to 2;
-reopening an upgraded database is safe. Existing attempts stay adaptive. Existing
-issued tokens conservatively report pow: the old schema did not snapshot the
-method at issuance, so a later passed task cannot prove the method of an older
-token. Start a new attempt if your application requires pow_visual. Old outcomes recover action from the linked
-challenge; outcomes with deleted challenges keep NULL action and do not contribute
-to action-specific account risk. Configure new policies after upgrading.
+The backend obtains contexts through authenticated `/internal/v1/contexts`.
+Contexts expire after `challenge_ttl_seconds` from issuance, including time spent
+before challenge creation. Expired contexts cannot recreate operations after
+cleanup. There is no permanent `used_contexts` table. Existing context formats
+and database schemas are unsupported; start with a fresh database.
 
-Used context identifiers are retained in `used_contexts` after challenge cleanup,
-so an expired operation cannot be recreated with the same context. This compact
-ledger grows with operations and has no automatic pruning. Existing contexts
-already deleted before upgrading cannot be recovered. Generate random contexts.
-Do not downgrade the binary against this schema; restore a pre-upgrade backup.
+## Slider themes and embedding
 
-## Visual challenge locale
-
-Pass the application language as an option:
+The slider is 304 px wide and scales down to its container. Shadow DOM isolates
+its layout from application CSS. Pass `theme: 'light'`, `'dark'`, or `'auto'`
+(the default, following the system preference), or a custom object:
 
 ```js
-await verifyWebsiteAttempt(element, attempt, {serviceURL, locale: 'ru-RU'});
+const result = await verifyWebsiteAttempt(mount, attempt, {
+  serviceURL: 'https://verify.your-site.example',
+  locale: 'ru',
+  theme: {preset: 'dark', accent: '#c4a7ff', background: '#19212e',
+    surface: '#242f40', text: '#e6edf7', muted: '#9baac0',
+    border: '#334155', radius: '10px'},
+  signal: controller.signal,
+});
 ```
 
-Supported languages are `en` and `ru`, including regional variants. Without an
-explicit locale, selection uses the closest element/ancestor `lang`, page language,
-then the first supported browser preference (`navigator.languages`, `navigator.language`).
-An unsupported explicit or page language falls back to English. The selected language
-is kept throughout retries. `verifyVisual` accepts the same locale option.
-The visual instruction, labels, confirmation, loading, retry and error messages are
-translated. The server instruction key `match_reference` selects the translation;
-the legacy standard English instruction is also recognized. Custom server instructions
-are preserved verbatim and must be translated by their author.
+All custom fields except `preset` are optional. Colors must be valid CSS colors;
+`radius` must be a CSS border radius. Invalid values are ignored. The same fields
+can be inherited from the mount container as `--gateveriq-accent`,
+`--gateveriq-background`, `--gateveriq-surface`, `--gateveriq-text`,
+`--gateveriq-muted`, `--gateveriq-border`, and `--gateveriq-radius`.
+Options on the theme object take precedence over inherited variables.
+
+Serve all three JS modules in the same directory on your application origin.
+Allow the service in CSP `connect-src`, local workers in `worker-src` and PNG
+`data:` in `img-src`. If your CSP requires a nonce for style elements, pass
+`styleNonce` with the nonce authorized by your policy. Slider CSS is inserted into
+its shadow root using that nonce. Mount it inside your app or WebView and consume
+the resulting token on the backend; `serviceURL` and the allowed Origin must match
+that environment.
+
+`locale: 'ru'` and `'en'` are supported, including regional variants. Fallbacks
+are the nearest `lang`, page language, browser preferences, then English.
+`verifyVisual` accepts the same `theme`, `locale`, `signal`, and `styleNonce` options.
+The local demo includes a theme selector.

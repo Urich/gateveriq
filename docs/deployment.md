@@ -98,8 +98,8 @@ when a different configuration is needed.
 
 Use SQLite's backup API or stop the service before copying it. Back up the token
 key with the database. Copying only the database while WAL is active is unsafe.
-The current code creates additive tables on startup; do not assume arbitrary older
-versions can use an upgraded database. Do not share it between separately deployed versions.
+Startup initializes a fresh schema; migrations from older schemas are not supported.
+Use a fresh database for this protocol revision. Do not share databases between versions.
 
 Token-key rotation is not implemented. Replacing it changes token reconstruction
 and history pseudonyms. For emergency rotation stop issuance/service, expire or

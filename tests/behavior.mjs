@@ -2,7 +2,7 @@
 import {runInNewContext} from 'node:vm';
 import assert from 'node:assert/strict';
 const source = readFileSync(new URL('../web/widget.js', import.meta.url), 'utf8')
-  .replace(/^const workerURL.*$/m, '').replaceAll('export ', '');
+  .replace(/^const workerURL.*$/m, '').replace(/^import .*$/gm, '').replaceAll('export ', '');
 class Target {
   listeners = new Map();
   children = [];

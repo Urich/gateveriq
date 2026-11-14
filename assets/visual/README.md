@@ -1,5 +1,9 @@
 # Trial illustration bank
 
+These are historical illustration assets. Runtime verification now uses locally
+generated slider puzzles (`src/puzzle.rs`); this bank is not embedded in the service.
+
+
 [English](README.md) | [Русский](README.ru.md)
 
 Generated offline with the built-in image_gen tool. No external generation service

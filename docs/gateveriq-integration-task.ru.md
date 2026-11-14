@@ -68,7 +68,7 @@ OPAQUE-аутентификацией. GateVeriq используется как
 - `src/visual.rs`: картинки, лимит ответов, срок действия, смена доски при ошибке.
 - `src/service.rs`: challenge, выдача и потребление токена.
 - `sdk/server.mjs`: `prepareLogin`, `consume`, `reportOutcome`.
-- `web/widget.js`, `web/worker.js`: браузерный сценарий.
+- `web/widget.js`, `web/slider.js`, `web/worker.js`: браузерный сценарий.
 - `docs/protocol.md`, `docs/website-integration.md`, `docs/integration-guide.md`.
 
 В изученной версии `WebsitePrepare` не содержит режима обязательных картинок,
