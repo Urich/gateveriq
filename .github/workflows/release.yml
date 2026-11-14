@@ -21,6 +21,7 @@ jobs:
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
           test "$GITHUB_REF_NAME" = "v$version"
+          test -s "docs/releases/$GITHUB_REF_NAME.md"
       - run: cargo test --locked
       - run: bash scripts/build-release.sh
       - run: GATEVERIQ_BINARY="$PWD/target/x86_64-unknown-linux-gnu/release/gateveriq" python3 tests/e2e.py
@@ -73,4 +74,4 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "Gateveriq $GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --notes-file "docs/releases/$GITHUB_REF_NAME.md" --title "Gateveriq $GITHUB_REF_NAME"

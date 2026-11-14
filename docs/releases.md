@@ -52,9 +52,9 @@ Existing configuration and keys are never regenerated on restart.
 Download the `.tar.gz` and its `.sha256` file from GitHub Releases, then:
 
 ```sh
-sha256sum -c gateveriq-0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-tar -xzf gateveriq-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-cd gateveriq-0.1.0-x86_64-unknown-linux-gnu
+sha256sum -c gateveriq-0.2.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf gateveriq-0.2.0-x86_64-unknown-linux-gnu.tar.gz
+cd gateveriq-0.2.0-x86_64-unknown-linux-gnu
 sudo bash scripts/install.sh
 curl --fail http://127.0.0.1:9080/health
 journalctl -u gateveriq -f
@@ -62,7 +62,9 @@ journalctl -u gateveriq -f
 
 The installer creates a dedicated account and systemd service. It keeps config,
 key and database in `/var/lib/gateveriq`, with both APIs on loopback by default.
-For upgrades, back up the data while stopped, then run the new release's installer.
+For this release, back up existing data while stopped and use a fresh database.
+v0.1.0 database migrations are not supported. Create new integrations against the
+fresh database before connecting applications. Then run the release installer.
 Existing config and keys are preserved. Updating from a development checkout does
 not automatically migrate its database; move existing data separately with the
 service stopped and update paths in the configuration.
@@ -81,7 +83,7 @@ the binary; widget and SDK sources are also included in the archive.
 
 The release workflow supports a manual run for testing without publication.
 To publish, update the Cargo package/lockfile version and default image version in
-Compose, commit, then push a matching tag (for example `v0.1.0`). The workflow
+Compose, add `docs/releases/v<VERSION>.md` with release notes, commit, then push a matching tag (for example `v0.2.0`). The workflow
 tests Rust, the release binary, Docker persistence and systemd installation before
 publishing the versioned GHCR image and GitHub Release assets. It uses the
 repository's `GITHUB_TOKEN` with `contents: write` and `packages: write`.

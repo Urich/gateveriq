@@ -1,7 +1,7 @@
 services:
   gateveriq:
     build: .
-    image: ${GATEVERIQ_IMAGE:-ghcr.io/urich/gateveriq:v0.1.0}
+    image: ${GATEVERIQ_IMAGE:-ghcr.io/urich/gateveriq:v0.2.0}
     restart: unless-stopped
     ports:
       - "127.0.0.1:9080:9080"
