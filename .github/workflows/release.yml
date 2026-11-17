@@ -28,19 +28,7 @@ jobs:
       - name: Test Docker lifecycle
         env:
           GATEVERIQ_IMAGE: gateveriq:ci
-        run: |
-          docker compose up --build -d --wait
-          curl --fail --retry 10 --retry-delay 2 --retry-connrefused http://127.0.0.1:9080/health
-          docker compose exec -T gateveriq gateveriq --config /data/config.toml integration-create --name smoke --actions test > /tmp/integration.json
-          docker compose exec -T gateveriq sha256sum /data/token.key /data/config.toml > /tmp/state-before
-          docker compose down
-          docker compose up -d --wait
-          docker compose exec -T gateveriq sha256sum /data/token.key /data/config.toml > /tmp/state-after
-          diff /tmp/state-before /tmp/state-after
-          id=$(python3 -c 'import json; print(json.load(open("/tmp/integration.json"))["integration_id"])')
-          docker compose exec -T gateveriq gateveriq --config /data/config.toml integration-disable --id "$id"
-          curl --fail --retry 10 --retry-delay 2 --retry-connrefused http://127.0.0.1:9080/health
-          docker compose down
+        run: bash tests/docker.sh
       - name: Test Ubuntu installer and upgrade
         run: |
           mkdir /tmp/release-test

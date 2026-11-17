@@ -3,6 +3,7 @@ services:
     build: .
     image: ${GATEVERIQ_IMAGE:-ghcr.io/urich/gateveriq:v0.2.0}
     restart: unless-stopped
+    stop_grace_period: 30s
     ports:
       - "127.0.0.1:9080:9080"
     volumes:

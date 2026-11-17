@@ -8,6 +8,9 @@ use gateveriq::{
 struct Cli {
     #[arg(long, default_value = "config.toml")]
     config: String,
+    /// Override the internal API bind address (use a private network outside loopback).
+    #[arg(long, env = "GATEVERIQ_INTERNAL_LISTEN")]
+    internal_listen: Option<std::net::SocketAddr>,
     #[command(subcommand)]
     command: Command,
 }
@@ -133,7 +136,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    let config: Config = toml::from_str(&std::fs::read_to_string(cli.config)?)?;
+    let mut config: Config = toml::from_str(&std::fs::read_to_string(cli.config)?)?;
+    if let Some(address) = cli.internal_listen {
+        config.internal_listen = address;
+    }
     let app = App::open(config)?;
     match cli.command {
         Command::Serve => service::serve(app).await?,

@@ -5,8 +5,10 @@
 The website backend creates and stores each login attempt. The browser solves the
 challenge directly against the public Gateveriq listener. The website backend
 consumes the token before checking credentials and reports the actual login result.
-The internal listener stays on loopback; keep Gateveriq with your application backend
-or reach it through a private authenticated transport. Never expose the integration
+The native internal listener defaults to loopback. In Docker, backends on the same
+Compose network use `http://gateveriq:9081` with their integration secret; the port
+is not published on the host. See [Docker deployment](releases.md#docker).
+For remote access use a private authenticated transport. Never expose the integration
 secret or the internal API to browser code.
 
 ## Create an integration

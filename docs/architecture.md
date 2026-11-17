@@ -27,8 +27,9 @@ Clients are untrusted. An authenticated backend creates attempts, consumes token
 and reports login results. It chooses immutable action, context and account bindings.
 Clients cannot select difficulty or report password results. Secrets stay on the backend.
 
-Public and internal APIs have separate listeners. Internal API binding is loopback
-only; remote backends need private authenticated transport. Website routes check
+Public and internal APIs have separate listeners. The internal API defaults to loopback in native installations; Docker binds it to
+`0.0.0.0:9081` for backends on the same private container network, without publishing
+the port on the host. Remote backends need private authenticated transport. Website routes check
 exact origins and implement CORS. Origin is not authentication against arbitrary HTTP bots.
 
 ## Flows

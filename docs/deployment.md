@@ -24,13 +24,18 @@ gateveriq --config /etc/gateveriq/config.toml serve
 | database | Absolute path from init | SQLite database |
 | token_key_file | Absolute path from init | Canonical unpadded Base64URL key, 32 bytes |
 | public_listen | 127.0.0.1:9080 | Public API and assets |
-| internal_listen | 127.0.0.1:9081 | Internal API; must bind to loopback |
+| internal_listen | 127.0.0.1:9081 | Internal API; loopback natively, private container network in Docker |
 | difficulty_bits | 18 | PoW difficulty, 1-24 |
 | challenge_ttl_seconds | 120 | Challenge lifetime, 10-600 seconds |
 | token_ttl_seconds | 60 | Token lifetime, 10-300 seconds |
 | retention_seconds | 300 | Receipt retry/cleanup retention, 300-86400 seconds |
 | requests_per_minute | 120 | Positive in-memory fixed-window bucket limit |
 | max_active_challenges | 1000 | Positive per-integration unexpired challenge limit |
+
+`GATEVERIQ_INTERNAL_LISTEN` (or `--internal-listen ADDRESS` before the subcommand)
+overrides `internal_listen` at runtime. The Alpine Docker image sets it to
+`0.0.0.0:9081` so backends in the same container network can connect; Compose does
+not publish this port on the host. See [Docker deployment](releases.md#docker).
 
 Optional website configuration, with defaults:
 

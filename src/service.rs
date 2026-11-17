@@ -50,9 +50,8 @@ impl Config {
             || !(300..=86400).contains(&self.retention_seconds)
             || self.requests_per_minute == 0
             || self.max_active_challenges == 0
-            || !self.internal_listen.ip().is_loopback()
         {
-            return Err("invalid configuration; internal API must bind to loopback".into());
+            return Err("invalid configuration".into());
         }
         Ok(())
     }
@@ -624,8 +623,23 @@ pub fn routers(a: Shared) -> (Router, Router) {
 pub async fn serve(a: Shared) -> Result<(), Box<dyn std::error::Error>> {
     let public = tokio::net::TcpListener::bind(a.config.public_listen).await?;
     let internal = tokio::net::TcpListener::bind(a.config.internal_listen).await?;
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let (shutdown_tx, mut public_shutdown) = tokio::sync::watch::channel(false);
+    let mut internal_shutdown = public_shutdown.clone();
+    let shutdown = async move {
+        #[cfg(unix)]
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result?,
+            _ = terminate.recv() => {},
+        }
+        #[cfg(not(unix))]
+        tokio::signal::ctrl_c().await?;
+        let _ = shutdown_tx.send(true);
+        Ok::<_, std::io::Error>(())
+    };
     let cleanup = a.clone();
-    tokio::spawn(async move {
+    let cleanup_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
@@ -635,15 +649,36 @@ pub async fn serve(a: Shared) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let (p, i) = routers(a);
-    tokio::try_join!(
-        axum::serve(
-            public,
-            p.into_make_service_with_connect_info::<SocketAddr>()
-        ),
-        axum::serve(
-            internal,
-            i.into_make_service_with_connect_info::<SocketAddr>()
+    let servers = async {
+        tokio::try_join!(
+            axum::serve(
+                public,
+                p.into_make_service_with_connect_info::<SocketAddr>()
+            )
+            .with_graceful_shutdown(async move {
+                let _ = public_shutdown.changed().await;
+            }),
+            axum::serve(
+                internal,
+                i.into_make_service_with_connect_info::<SocketAddr>()
+            )
+            .with_graceful_shutdown(async move {
+                let _ = internal_shutdown.changed().await;
+            })
         )
-    )?;
+        .map(|_| ())
+    };
+    tokio::pin!(servers, shutdown);
+    let result = tokio::select! {
+        result = &mut servers => result,
+        result = &mut shutdown => async {
+            result?;
+            tokio::time::timeout(std::time::Duration::from_secs(25), &mut servers)
+                .await
+                .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "shutdown timed out"))?
+        }.await,
+    };
+    cleanup_task.abort();
+    result?;
     Ok(())
 }

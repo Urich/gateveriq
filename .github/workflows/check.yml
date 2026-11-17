@@ -8,6 +8,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,3 +25,21 @@ jobs:
       - run: cargo build --locked
       - run: node tests/worker.mjs
       - run: python3 tests/e2e.py
+      - name: Test Alpine Docker image and networking
+        run: bash tests/docker.sh
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish Docker image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker tag gateveriq:smoke "$image:sha-$GITHUB_SHA"
+          docker tag gateveriq:smoke "$image:v$version"
+          docker push "$image:sha-$GITHUB_SHA"
+          docker push "$image:v$version"

@@ -52,6 +52,36 @@ with tempfile.TemporaryDirectory() as directory:
         process.terminate();process.wait();raise RuntimeError('Server did not start')
     def context(action):
         return post(internal, '/internal/v1/contexts', {'integration_id':integration['integration_id'], 'action':action}, True)['context_id']
+    def stop(process):
+        # Confirm both listeners are reading request bodies before sending SIGTERM.
+        # Expect/Continue avoids guessing whether a request has been accepted.
+        with closing(socket.create_connection(('127.0.0.1', public), timeout=5)) as public_socket, \
+             closing(socket.create_connection(('127.0.0.1', internal), timeout=5)) as internal_socket:
+            streams = []
+            try:
+                for connection, path in [(public_socket, '/public/v1/solutions'),
+                                         (internal_socket, '/internal/v1/contexts')]:
+                    connection.sendall((f'POST {path} HTTP/1.1\r\nHost: localhost\r\n'
+                                        'Content-Type: application/json\r\nContent-Length: 2\r\n'
+                                        'Expect: 100-continue\r\nConnection: close\r\n\r\n').encode())
+                    stream = connection.makefile('rb')
+                    streams.append(stream)
+                    assert b'100 Continue' in stream.readline()
+                    assert stream.readline() == b'\r\n'
+                process.terminate()
+                time.sleep(.05)
+                assert process.poll() is None, 'Server abandoned active requests on SIGTERM'
+                for connection in [public_socket, internal_socket]:
+                    connection.sendall(b'{}')
+                for stream in streams:
+                    assert b'422' in stream.readline(), 'Active request was not completed'
+            finally:
+                for stream in streams:
+                    stream.close()
+        assert process.wait(timeout=30) == 0, 'Server did not shut down cleanly'
+    # The environment must override an unusable address in the config file.
+    config.write_text(config.read_text().replace(f'127.0.0.1:{internal}', '192.0.2.1:9081'))
+    os.environ['GATEVERIQ_INTERNAL_LISTEN'] = f'0.0.0.0:{internal}'
     process=launch()
     try:
         prepared={'integration_id':integration['integration_id'],'action':'test','context_id':context('test')}
@@ -59,7 +89,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert challenge == post(internal,'/internal/v1/challenges',prepared,True)
         file=Path(directory)/'challenge.json';file.write_text(json.dumps(challenge))
         solved=json.loads(cli('solve','--challenge',str(file),'--submit-url',f'http://127.0.0.1:{public}/public/v1/solutions'))
-        process.terminate();process.wait();process=launch()
+        stop(process);process=launch()
         request={**prepared,'verification_token':solved['verification_token'],'request_id':'consume-1'}
         assert post(internal,'/internal/v1/verifications/consume',request,True)['valid']
         assert post(internal,'/internal/v1/verifications/consume',request,True)['valid']
@@ -78,7 +108,7 @@ with tempfile.TemporaryDirectory() as directory:
         solution = json.loads(cli('solve', '--challenge', str(file)))
         solution['browser'] = {'webdriver':False, 'cookies_enabled':True, 'languages_count':1}
         solution['behavior'] = {'challenge_id':challenge['challenge_id'], 'elapsed_ms':1000, 'activation_ms':500, 'trusted_activations':1, 'pointer_events':0, 'keyboard_events':1, 'focus_changes':1}
-        process.terminate();process.wait();process=launch()
+        stop(process);process=launch()
         verified = post(public, '/public/v1/web/solutions', solution, origin='http://127.0.0.1:8090')
         cli('integration-visual-policy', '--id', integration['integration_id'], '--action', 'register', '--visual', 'always')
         mandatory = {'integration_id':integration['integration_id'], 'action':'register', 'context_id':context('register'), 'account_id':'registration-account', 'origin':'http://127.0.0.1:8090'}
@@ -143,6 +173,6 @@ with tempfile.TemporaryDirectory() as directory:
         verified = post(public, '/public/v1/web/visual/solutions', proof, origin='http://127.0.0.1:8090')
         consume.update(context_id=attempt['context_id'], request_id='visual-login', verification_token=verified['verification_token'])
         assert post(internal, '/internal/v1/verifications/consume', consume, True)['valid']
-        print('HTTP/CLI, website login, slider completion, RGBA PNG decoding, risk and restart tests passed')
+        print('HTTP/CLI, website login, slider completion, RGBA PNG decoding, risk, network override, graceful shutdown and restart tests passed')
     finally:
-        process.terminate();process.wait()
+        stop(process)

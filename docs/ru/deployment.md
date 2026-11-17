@@ -25,13 +25,18 @@ gateveriq --config /etc/gateveriq/config.toml serve
 | database | Абсолютный путь из init | База SQLite |
 | token_key_file | Абсолютный путь из init | Ключ 32 байта в каноническом Base64URL без padding |
 | public_listen | 127.0.0.1:9080 | Публичный API и файлы виджета |
-| internal_listen | 127.0.0.1:9081 | Внутренний API, только loopback |
+| internal_listen | 127.0.0.1:9081 | Внутренний API: loopback нативно, приватная сеть контейнеров в Docker |
 | difficulty_bits | 18 | Сложность PoW, 1–24 |
 | challenge_ttl_seconds | 120 | Срок задачи, 10–600 секунд |
 | token_ttl_seconds | 60 | Срок токена, 10–300 секунд |
 | retention_seconds | 300 | Повторы и хранение квитанций, 300–86400 секунд |
 | requests_per_minute | 120 | Положительный лимит запросов на интервал в памяти |
 | max_active_challenges | 1000 | Положительный лимит непросроченных задач интеграции |
+
+`GATEVERIQ_INTERNAL_LISTEN` (или `--internal-listen ADDRESS` перед подкомандой)
+переопределяет `internal_listen` при запуске. Docker-образ на Alpine задаёт
+`0.0.0.0:9081` для доступа серверов приложений в общей сети контейнеров; Compose
+не публикует этот порт на хост. См. [запуск Docker](../releases.md#docker).
 
 Необязательная секция сайта со значениями по умолчанию:
 

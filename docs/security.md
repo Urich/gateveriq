@@ -11,7 +11,8 @@ A valid SHA-256 proof was submitted for a server-issued challenge and the bound 
 - Random 256-bit challenge IDs, salts and integration secrets.
 - Server-selected difficulty and expiry.
 - Canonical Base64URL decoding and exact byte lengths.
-- Authenticated internal routes on a separate loopback listener.
+- Authenticated internal routes on a separate listener: loopback by default natively,
+  shared container network in Docker (no host port publication).
 - Action allowlists and integration/action/context token binding.
 - Constant-time secret-hash comparison.
 - Transactional single-use consumption and bounded retry receipts.
