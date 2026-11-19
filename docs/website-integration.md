@@ -30,11 +30,15 @@ history_retention_seconds = 86400
 attempts_per_minute = 20
 failure_limit = 5
 account_failure_limit = 5
+reset_account_failures_on_slider_success = false
 ```
 
 IP failures use the last ten UTC minute buckets; login failures per account use
-the configured retention window (24 hours by default). A success does not clear
-failures. These are experimental rules, not a calibrated classifier. Cleanup runs
+the configured retention window (24 hours by default). Set
+`reset_account_failures_on_slider_success = true` to reset the login-failure count
+for the same account, action and integration after successfully solving the
+slider and PoW. The reset happens once per challenge.
+These are experimental rules, not a calibrated classifier. Cleanup runs
 in bounded batches: expired rows are ignored immediately but physical deletion can
 lag behind under a backlog. HMAC identifiers are pseudonymous, not anonymous.
 
@@ -137,7 +141,7 @@ coordinates remain server-side. A wrong answer generates a new image and task ID
 spending one of three attempts without extending the deadline (at most 120 seconds).
 Completion still requires the original PoW and a bound backend consumption.
 The slider replaces browser/behavior and IP-history risk rejection for that attempt
-only, preserving ordinary throughput limits and account/source history.
+only. Ordinary throughput limits still apply.
 
 The widget uses a native range input: drag with mouse/touch, or move with arrow
 keys and confirm with Enter or the Check button. No nonvisual challenge is provided.

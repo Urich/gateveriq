@@ -889,6 +889,92 @@ async fn website_binding_outcome_and_step_up() {
     assert_eq!(count, 0);
 }
 #[tokio::test]
+async fn slider_can_reset_account_failures_once() {
+    use gateveriq::website::{outcome, LoginOutcome};
+
+    let (_dir, a, id, h) = website_setup();
+    assert!(!a.config.website.reset_account_failures_on_slider_success);
+    let mut config = a.config.clone();
+    config.website.reset_account_failures_on_slider_success = true;
+    let enabled = App::open(config).unwrap();
+    let next = |app: &Shared, ctx: &str| web_prepare(app, &h, &id, ctx, "reset-account").unwrap();
+    let report = |ctx: &str| LoginOutcome {
+        integration_id: id.clone(),
+        action: "register".into(),
+        context_id: ctx.into(),
+        request_id: "login-request".into(),
+        success: false,
+    };
+
+    let first_ctx = context(&a, &id, &h);
+    let first = serde_json::from_value(next(&a, &first_ctx)["challenge"].clone()).unwrap();
+    let (status, result) = web_submit(
+        a.clone(),
+        &first,
+        Some("https://site.example"),
+        "/public/v1/web/solutions",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let token = result["verification_token"].as_str().unwrap();
+    consume(&a, &h, request(&id, token, &first_ctx, "login-request")).unwrap();
+    outcome(&a, &h, report(&first_ctx)).unwrap();
+
+    let default_ctx = context(&a, &id, &h);
+    let default_slider = next(&a, &default_ctx);
+    assert_eq!(
+        default_slider["decision"],
+        "additional_verification_required"
+    );
+    let default_challenge = serde_json::from_value(default_slider["challenge"].clone()).unwrap();
+    let default_result = gateveriq::visual::solve(
+        &a,
+        "https://site.example",
+        visual_answer(&a, &default_challenge, &default_slider),
+    )
+    .unwrap();
+
+    let slider_ctx = context(&enabled, &id, &h);
+    let slider = next(&enabled, &slider_ctx);
+    assert_eq!(slider["decision"], "additional_verification_required");
+    let c: core::Challenge = serde_json::from_value(slider["challenge"].clone()).unwrap();
+    let answer = visual_answer(&enabled, &c, &slider);
+    let (status, result) = web_submit_report(
+        enabled.clone(),
+        &c,
+        Some("https://site.example"),
+        "/public/v1/web/visual/solutions",
+        Some(serde_json::json!({
+            "challenge_id": answer.challenge_id, "nonce": answer.nonce,
+            "task_id": answer.task_id, "position": answer.position,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    outcome(&enabled, &h, report(&first_ctx)).unwrap();
+    let next_ctx = context(&enabled, &id, &h);
+    assert_eq!(next(&enabled, &next_ctx)["decision"], "verify");
+
+    // Record a newer login failure, then replay the still-unconsumed slider.
+    let token = default_result["verification_token"].as_str().unwrap();
+    consume(&a, &h, request(&id, token, &default_ctx, "login-request")).unwrap();
+    outcome(&a, &h, report(&default_ctx)).unwrap();
+    assert_eq!(
+        result,
+        gateveriq::visual::solve(
+            &enabled,
+            "https://site.example",
+            visual_answer(&enabled, &c, &slider),
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        next(&enabled, &context(&enabled, &id, &h))["decision"],
+        "additional_verification_required"
+    );
+}
+
+#[tokio::test]
 async fn website_cannot_bypass_origin_or_use_unbound_challenge() {
     let (_dir, a, id, h) = website_setup();
     let ctx = context(&a, &id, &h);

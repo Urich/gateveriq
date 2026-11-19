@@ -97,77 +97,82 @@ pub fn solve(app: &Shared, origin: &str, p: VisualSolution) -> Result<Value, Err
     if core::decode(&p.task_id, 32).is_none() || p.position > puzzle::MAX_POSITION {
         return Err(bad("INVALID_REQUEST"));
     }
-    {
-        let mut db = app.db.lock().unwrap();
-        let tx = db.transaction().map_err(db_error)?;
-        crate::website::binding(&tx, &p.challenge_id, Some(origin))?
-            .ok_or(Error(StatusCode::FORBIDDEN, "ORIGIN_NOT_ALLOWED"))?;
-        let c = tx
-            .query_row(
-                "SELECT id,salt,difficulty,expires FROM challenges WHERE id=?1",
-                [&p.challenge_id],
-                |r| {
-                    Ok(core::Challenge {
-                        challenge_id: r.get(0)?,
-                        algorithm: "sha256-pow-v1".into(),
-                        salt: r.get(1)?,
-                        difficulty_bits: r.get(2)?,
-                        expires_at: r.get(3)?,
-                    })
-                },
-            )
-            .map_err(db_error)?;
-        if c.expires_at <= service::now() {
-            return Err(bad("CHALLENGE_EXPIRED"));
-        }
-        if !core::verify(&c, &p.nonce) {
-            return Err(bad("INVALID_SOLUTION"));
-        }
-        let row:Option<(u32,i64,u32,bool)>=tx.query_row("SELECT answer,expires,attempts,passed FROM visual_tasks WHERE challenge_id=?1 AND task_id=?2",params![p.challenge_id,p.task_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(db_error)?;
-        let (answer, expires, attempts, was_passed) = row.ok_or(bad("VISUAL_NOT_FOUND"))?;
-        if expires <= service::now() {
-            return Err(bad("VISUAL_EXPIRED"));
-        }
-        if attempts >= 3 && !was_passed {
-            return Err(Error(
-                StatusCode::TOO_MANY_REQUESTS,
-                "VISUAL_ATTEMPTS_EXHAUSTED",
-            ));
-        }
-        if answer.abs_diff(p.position) > puzzle::TOLERANCE {
-            if !was_passed {
-                if attempts + 1 < 3 {
-                    let (replacement, answer) = puzzle::new_task(expires, 3 - attempts - 1);
-                    tx.execute("UPDATE visual_tasks SET attempts=attempts+1,task_id=?2,answer=?3,payload=?4 WHERE challenge_id=?1",
+    let mut db = app.db.lock().unwrap();
+    let tx = db.transaction().map_err(db_error)?;
+    crate::website::binding(&tx, &p.challenge_id, Some(origin))?
+        .ok_or(Error(StatusCode::FORBIDDEN, "ORIGIN_NOT_ALLOWED"))?;
+    let c = tx
+        .query_row(
+            "SELECT id,salt,difficulty,expires FROM challenges WHERE id=?1",
+            [&p.challenge_id],
+            |r| {
+                Ok(core::Challenge {
+                    challenge_id: r.get(0)?,
+                    algorithm: "sha256-pow-v1".into(),
+                    salt: r.get(1)?,
+                    difficulty_bits: r.get(2)?,
+                    expires_at: r.get(3)?,
+                })
+            },
+        )
+        .map_err(db_error)?;
+    if c.expires_at <= service::now() {
+        return Err(bad("CHALLENGE_EXPIRED"));
+    }
+    if !core::verify(&c, &p.nonce) {
+        return Err(bad("INVALID_SOLUTION"));
+    }
+    let row:Option<(u32,i64,u32,bool)>=tx.query_row("SELECT answer,expires,attempts,passed FROM visual_tasks WHERE challenge_id=?1 AND task_id=?2",params![p.challenge_id,p.task_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(db_error)?;
+    let (answer, expires, attempts, was_passed) = row.ok_or(bad("VISUAL_NOT_FOUND"))?;
+    if expires <= service::now() {
+        return Err(bad("VISUAL_EXPIRED"));
+    }
+    if attempts >= 3 && !was_passed {
+        return Err(Error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "VISUAL_ATTEMPTS_EXHAUSTED",
+        ));
+    }
+    if answer.abs_diff(p.position) > puzzle::TOLERANCE {
+        if !was_passed {
+            if attempts + 1 < 3 {
+                let (replacement, answer) = puzzle::new_task(expires, 3 - attempts - 1);
+                tx.execute("UPDATE visual_tasks SET attempts=attempts+1,task_id=?2,answer=?3,payload=?4 WHERE challenge_id=?1",
                         params![p.challenge_id,replacement["task_id"].as_str().unwrap(),answer,replacement.to_string()]).map_err(db_error)?;
-                } else {
-                    tx.execute(
-                        "UPDATE visual_tasks SET attempts=attempts+1 WHERE challenge_id=?1",
-                        [&p.challenge_id],
-                    )
-                    .map_err(db_error)?;
-                }
+            } else {
+                tx.execute(
+                    "UPDATE visual_tasks SET attempts=attempts+1 WHERE challenge_id=?1",
+                    [&p.challenge_id],
+                )
+                .map_err(db_error)?;
             }
-            tx.commit().map_err(db_error)?;
-            return Err(bad("INVALID_VISUAL_SOLUTION"));
         }
+        tx.commit().map_err(db_error)?;
+        return Err(bad("INVALID_VISUAL_SOLUTION"));
+    }
+    if !was_passed {
         tx.execute(
             "UPDATE visual_tasks SET passed=1 WHERE challenge_id=?1",
             [&p.challenge_id],
         )
         .map_err(db_error)?;
-        tx.commit().map_err(db_error)?;
     }
-    service::solution_with_origin(
+    let result = service::issue_solution_token(
+        &tx,
         app,
         Solution {
-            challenge_id: p.challenge_id,
+            challenge_id: p.challenge_id.clone(),
             nonce: p.nonce,
             browser: None,
             behavior: None,
         },
         Some(origin),
-    )
+    )?;
+    if !was_passed && app.config.website.reset_account_failures_on_slider_success {
+        crate::website::clear_account_failures(&tx, &p.challenge_id)?;
+    }
+    tx.commit().map_err(db_error)?;
+    Ok(result)
 }
 pub(crate) async fn submit(
     State(a): State<Shared>,

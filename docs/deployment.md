@@ -45,10 +45,13 @@ history_retention_seconds = 86400
 attempts_per_minute = 20
 failure_limit = 5
 account_failure_limit = 5
+reset_account_failures_on_slider_success = false
 ```
 
-History retention accepts 600-86400 seconds; the other website values accept
-1-10000. IP failures use ten UTC minute buckets. Account failures use the full
+History retention accepts 600–86400 seconds, and numeric limits accept 1–10000.
+The boolean `reset_account_failures_on_slider_success` enables resetting the
+account login-failure count after successful slider and PoW verification.
+IP failures use ten UTC minute buckets. Account failures use the full
 retention window. The attempt limit applies per UTC minute. These settings also
 control the thresholds for legacy `--history-check` integrations.
 

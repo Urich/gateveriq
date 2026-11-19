@@ -8,7 +8,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use hmac::{Hmac, Mac};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Sha256;
@@ -359,11 +359,22 @@ pub(crate) fn solution_with_origin(
     p: Solution,
     origin: Option<&str>,
 ) -> Result<Value, Error> {
+    let mut db = app.db.lock().unwrap();
+    let tx = db.transaction().map_err(db_error)?;
+    let result = issue_solution_token(&tx, app, p, origin)?;
+    tx.commit().map_err(db_error)?;
+    Ok(result)
+}
+
+pub(crate) fn issue_solution_token(
+    tx: &Transaction<'_>,
+    app: &Shared,
+    p: Solution,
+    origin: Option<&str>,
+) -> Result<Value, Error> {
     if core::decode(&p.challenge_id, 32).is_none() || core::decode(&p.nonce, 8).is_none() {
         return Err(bad("INVALID_REQUEST"));
     }
-    let mut db = app.db.lock().unwrap();
-    let tx = db.transaction().map_err(db_error)?;
     let c = tx
         .query_row(
             "SELECT id,salt,difficulty,expires FROM challenges WHERE id=?1",
@@ -391,12 +402,12 @@ pub(crate) fn solution_with_origin(
     if !core::verify(&c, &p.nonce) {
         return Err(bad("INVALID_SOLUTION"));
     }
-    crate::website::gate(&tx, app, &c.challenge_id, origin)?;
+    crate::website::gate(tx, app, &c.challenge_id, origin)?;
     let browser_required: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM browser_policies p JOIN challenges c ON c.integration_id=p.integration_id WHERE c.id=?1)",
         [&c.challenge_id], |r| r.get(0)).map_err(db_error)?;
-    let visual_passed = crate::visual::passed(&tx, &c.challenge_id)?;
-    let website = crate::website::binding(&tx, &c.challenge_id, origin)?.is_some();
+    let visual_passed = crate::visual::passed(tx, &c.challenge_id)?;
+    let website = crate::website::binding(tx, &c.challenge_id, origin)?.is_some();
     if website && !visual_passed {
         crate::website::assess_interaction(&p, app.config.challenge_ttl_seconds as u32 * 1000)?;
     }
@@ -436,7 +447,6 @@ pub(crate) fn solution_with_origin(
         )
         .map_err(db_error)?;
     }
-    tx.commit().map_err(db_error)?;
     Ok(json!({"verification_token":token,"expires_at":expiry}))
 }
 pub fn consume(app: &Shared, headers: &HeaderMap, p: Consume) -> Result<Value, Error> {

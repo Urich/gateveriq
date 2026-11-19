@@ -19,6 +19,7 @@ pub struct WebsitePolicy {
     pub attempts_per_minute: u32,
     pub failure_limit: u32,
     pub account_failure_limit: u32,
+    pub reset_account_failures_on_slider_success: bool,
 }
 impl Default for WebsitePolicy {
     fn default() -> Self {
@@ -27,6 +28,7 @@ impl Default for WebsitePolicy {
             attempts_per_minute: 20,
             failure_limit: 5,
             account_failure_limit: 5,
+            reset_account_failures_on_slider_success: false,
         }
     }
 }
@@ -43,7 +45,44 @@ pub fn init_schema(db: &Connection) -> rusqlite::Result<()> {
     CREATE TABLE IF NOT EXISTS website_attempts(challenge_id TEXT PRIMARY KEY REFERENCES challenges(id) ON DELETE CASCADE,account_hash TEXT NOT NULL,origin TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS login_outcomes(challenge_id TEXT PRIMARY KEY,integration_id TEXT NOT NULL REFERENCES integrations(id),account_hash TEXT NOT NULL,success INTEGER NOT NULL,created INTEGER NOT NULL,action TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS login_account_history ON login_outcomes(integration_id,account_hash,created);
-    CREATE INDEX IF NOT EXISTS login_outcome_expiry ON login_outcomes(created);")
+    CREATE INDEX IF NOT EXISTS login_outcome_expiry ON login_outcomes(created);
+    CREATE TABLE IF NOT EXISTS cleared_login_failures(challenge_id TEXT PRIMARY KEY REFERENCES login_outcomes(challenge_id) ON DELETE CASCADE);")
+}
+
+fn account_failures(
+    db: &Connection,
+    app: &Shared,
+    integration: &str,
+    account: &str,
+    action: &str,
+) -> Result<i64, Error> {
+    db.query_row(
+        "SELECT COUNT(*) FROM login_outcomes o
+         WHERE o.integration_id=?1 AND o.account_hash=?2 AND o.action=?3 AND o.success=0
+           AND o.created>?4
+           AND NOT EXISTS (SELECT 1 FROM cleared_login_failures f WHERE f.challenge_id=o.challenge_id)",
+        params![integration, account, action, service::now() - app.config.website.history_retention_seconds],
+        |r| r.get(0),
+    )
+    .map_err(db_error)
+}
+
+pub(crate) fn clear_account_failures(
+    tx: &Transaction<'_>,
+    challenge_id: &str,
+) -> Result<(), Error> {
+    // Keep the original outcomes so retries retain their idempotency.
+    tx.execute(
+        "INSERT OR IGNORE INTO cleared_login_failures(challenge_id)
+         SELECT o.challenge_id FROM challenges c
+         JOIN website_attempts w ON w.challenge_id=c.id
+         JOIN login_outcomes o ON o.integration_id=c.integration_id
+           AND o.account_hash=w.account_hash AND o.action=c.action
+         WHERE c.id=?1 AND o.success=0",
+        [challenge_id],
+    )
+    .map_err(db_error)?;
+    Ok(())
 }
 pub fn cleanup(app: &service::App) -> rusqlite::Result<()> {
     app.db.lock().unwrap().execute("DELETE FROM login_outcomes WHERE rowid IN (SELECT rowid FROM login_outcomes WHERE created<=?1 LIMIT 500)", [service::now()-app.config.website.history_retention_seconds])?;
@@ -95,7 +134,7 @@ pub fn prepare(app: &Shared, headers: &HeaderMap, p: WebsitePrepare) -> Result<V
         if !allowed {
             return Err(Error(StatusCode::FORBIDDEN, "ORIGIN_NOT_ALLOWED"));
         }
-        let failures: i64 = db.query_row("SELECT COUNT(*) FROM login_outcomes WHERE integration_id=?1 AND account_hash=?2 AND action=?4 AND success=0 AND created>?3", params![p.integration_id,account,service::now()-app.config.website.history_retention_seconds,p.action], |r| r.get(0)).map_err(db_error)?;
+        let failures = account_failures(&db, app, &p.integration_id, &account, &p.action)?;
         failures >= i64::from(app.config.website.account_failure_limit)
     };
     let c = service::prepare(
@@ -236,7 +275,7 @@ pub(crate) fn gate(
             "ADDITIONAL_VERIFICATION_REQUIRED",
         ));
     }
-    let failures:i64 = tx.query_row("SELECT COUNT(*) FROM login_outcomes WHERE integration_id=?1 AND account_hash=?2 AND action=?4 AND success=0 AND created>?3",params![integration,account,service::now()-app.config.website.history_retention_seconds,action], |r| r.get(0)).map_err(db_error)?;
+    let failures = account_failures(tx, app, &integration, &account, &action)?;
     if failures >= i64::from(app.config.website.account_failure_limit) {
         return Err(Error(
             StatusCode::FORBIDDEN,

@@ -98,7 +98,9 @@ backend client is `sdk/server.mjs`. [Complete examples](docs/website-integration
 Defaults: 20 submissions per UTC minute; five verification failures in ten minute
 buckets trigger a history rejection; five reported login failures per account in
 the retained history trigger extra verification. History lasts 24 hours by default.
-Configure thresholds under `[website]`. Successes do not erase failures.
+Configure thresholds under `[website]`. Set
+`reset_account_failures_on_slider_success = true` in that section to reset the
+account login-failure count after successful slider verification.
 Forwarded-IP headers are ignored.
 
 Additional verification uses a compact slider with locally generated random landscapes.
