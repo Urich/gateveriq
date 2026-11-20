@@ -2,14 +2,31 @@
 //! Image matching and blind guesses remain possible: this is an experimental risk signal.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::{ImageEncoder, Rgba, RgbaImage};
-use rand::Rng;
+use rand::{seq::IteratorRandom, Rng};
 use serde_json::{json, Value};
+
+mod landscape;
 
 pub(crate) const WIDTH: u32 = 280;
 pub(crate) const HEIGHT: u32 = 140;
 pub(crate) const PIECE: u32 = 40;
 pub(crate) const MAX_POSITION: u32 = WIDTH - PIECE;
 pub(crate) const TOLERANCE: u32 = 3;
+const MIN_CUTOUT_X: u32 = 56;
+const MAX_CUTOUT_X: u32 = MAX_POSITION - 6;
+const MIN_CUTOUT_Y: u32 = 16;
+const MAX_CUTOUT_Y: u32 = HEIGHT - PIECE - 12;
+const CUTOUT_X_SPACING: u32 = PIECE + 4;
+const CUTOUT_Y_SPACING: u32 = 16;
+// Tabs on the top, right, bottom and left edges respectively.
+const PROFILES: [[bool; 4]; 6] = [
+    [true, true, false, false],
+    [false, true, true, false],
+    [false, false, true, true],
+    [true, false, false, true],
+    [true, false, true, false],
+    [false, true, false, true],
+];
 
 fn mix(a: [u8; 3], b: [u8; 3], amount: f32) -> [u8; 3] {
     std::array::from_fn(|i| (a[i] as f32 * (1.0 - amount) + b[i] as f32 * amount) as u8)
@@ -26,124 +43,67 @@ fn png(image: &RgbaImage) -> String {
         .expect("fixed-size RGBA image is valid PNG input");
     format!("data:image/png;base64,{}", STANDARD.encode(bytes))
 }
-fn inside(x: f32, y: f32) -> bool {
-    let circle = |cx: f32, cy: f32| (x - cx).powi(2) + (y - cy).powi(2) <= 5.5f32.powi(2);
-    (((6.0..34.0).contains(&x) && (6.0..34.0).contains(&y))
-        || circle(20.0, 6.0)
-        || circle(34.0, 20.0))
-        && !circle(6.0, 20.0)
-        && !circle(20.0, 34.0)
+fn inside(x: f32, y: f32, profile: [bool; 4]) -> bool {
+    let centers = [(20.0, 6.0), (34.0, 20.0), (20.0, 34.0), (6.0, 20.0)];
+    for ((cx, cy), tab) in centers.into_iter().zip(profile) {
+        if (x - cx).powi(2) + (y - cy).powi(2) <= 5.5f32.powi(2) {
+            return tab;
+        }
+    }
+    (6.0..34.0).contains(&x) && (6.0..34.0).contains(&y)
+}
+
+fn cutout_positions(rng: &mut impl Rng, answer: u32, piece_y: u32) -> [(u32, u32); 3] {
+    let mut positions = [(answer, piece_y); 3];
+    for i in 1..positions.len() {
+        let previous = &positions[..i];
+        let x = (MIN_CUTOUT_X..=MAX_CUTOUT_X)
+            .filter(|x| {
+                previous
+                    .iter()
+                    .all(|(px, _)| x.abs_diff(*px) >= CUTOUT_X_SPACING)
+            })
+            .choose(rng)
+            .expect("the horizontal range fits three spaced cutouts");
+        let y = (MIN_CUTOUT_Y..=MAX_CUTOUT_Y)
+            .filter(|y| {
+                previous
+                    .iter()
+                    .all(|(_, py)| y.abs_diff(*py) >= CUTOUT_Y_SPACING)
+            })
+            .choose(rng)
+            .expect("the vertical range fits three spaced cutouts");
+        positions[i] = (x, y);
+    }
+    positions
 }
 
 pub(crate) fn new_task(expires: i64, remaining: u32) -> (Value, u32) {
     let mut rng = rand::thread_rng();
-    // Sky top, horizon, distant mountains, near mountains, water.
-    let palettes = [
-        [
-            [62, 121, 169],
-            [218, 231, 218],
-            [113, 157, 161],
-            [45, 99, 112],
-            [78, 148, 158],
-        ],
-        [
-            [67, 74, 129],
-            [243, 185, 152],
-            [152, 126, 157],
-            [73, 85, 124],
-            [110, 135, 162],
-        ],
-        [
-            [26, 48, 83],
-            [121, 160, 172],
-            [72, 109, 135],
-            [32, 74, 93],
-            [54, 112, 136],
-        ],
-        [
-            [112, 159, 173],
-            [249, 225, 172],
-            [138, 156, 135],
-            [67, 114, 103],
-            [111, 168, 158],
-        ],
-        [
-            [119, 112, 170],
-            [240, 201, 205],
-            [173, 154, 184],
-            [96, 115, 153],
-            [137, 162, 188],
-        ],
-    ];
-    let colors = palettes[rng.gen_range(0..palettes.len())];
-    let phase = rng.gen_range(0.0..std::f32::consts::TAU);
-    let frequency = rng.gen_range(0.015..0.035f32);
-    let sun_x = rng.gen_range(25.0..255.0f32);
-    let sun_y = rng.gen_range(23.0..48.0f32);
-    let sun_radius = rng.gen_range(10.0..18.0f32);
-    let shore = rng.gen_range(95.0..115.0f32);
-    let mut background = RgbaImage::new(WIDTH, HEIGHT);
-    for (x, y, pixel) in background.enumerate_pixels_mut() {
-        let (xf, yf) = (x as f32, y as f32);
-        let mut color = mix(colors[0], colors[1], (yf / shore).min(1.0));
-        if (xf - sun_x).powi(2) + (yf - sun_y).powi(2) < sun_radius.powi(2) {
-            color = mix([255, 242, 208], color, 0.1);
-        }
-        let far = 77.0 + (xf * frequency + phase).sin() * 17.0 + (xf * 0.053 + phase).cos() * 8.0;
-        let near = 102.0 + (xf * frequency * 1.8 + phase + 2.0).sin() * 15.0;
-        if yf > far {
-            color = colors[2];
-        }
-        if yf > near {
-            color = colors[3];
-        }
-        if yf > shore {
-            let ripple =
-                ((xf * 0.11 + yf * 0.8 + phase).sin() * 0.04 + 0.08) * (1.0 - (yf - shore) / 60.0);
-            color = mix(colors[4], colors[1], ripple.max(0.0));
-        }
-        // Subtle per-pixel grain keeps each rendering unique, including flat regions.
-        let grain = rng.gen_range(-3i16..=3);
-        *pixel = Rgba([
-            color[0].saturating_add_signed(grain as i8),
-            color[1].saturating_add_signed(grain as i8),
-            color[2].saturating_add_signed(grain as i8),
-            255,
-        ]);
-    }
-    // A new foreground on every scene; silhouettes give the puzzle texture.
-    for _ in 0..rng.gen_range(5..12) {
-        let tx = rng.gen_range(0..WIDTH) as i32;
-        let base = rng.gen_range(105..HEIGHT) as i32;
-        let height = rng.gen_range(14..36);
-        for dy in 0..height {
-            let half = dy / 3 + 1;
-            for dx in -half..=half {
-                let (x, y) = (tx + dx, base - height + dy);
-                if x >= 0 && x < WIDTH as i32 && y >= 0 && y < HEIGHT as i32 {
-                    background.put_pixel(x as u32, y as u32, Rgba([24, 55, 66, 255]));
-                }
-            }
-        }
-    }
-    let answer = rng.gen_range(56..=MAX_POSITION - 6);
-    let piece_y = rng.gen_range(16..=HEIGHT - PIECE - 12);
+    let mut background = landscape::generate(&mut rng);
+    let profile = PROFILES[rng.gen_range(0..PROFILES.len())];
+    let contains = |x, y| inside(x, y, profile);
+    let answer = rng.gen_range(MIN_CUTOUT_X..=MAX_CUTOUT_X);
+    let piece_y = rng.gen_range(MIN_CUTOUT_Y..=MAX_CUTOUT_Y);
+    let positions = cutout_positions(&mut rng, answer, piece_y);
     let mut piece = RgbaImage::new(PIECE, PIECE);
     for y in 0..PIECE {
         for x in 0..PIECE {
             let coverage = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)]
                 .iter()
-                .filter(|(dx, dy)| inside(x as f32 + dx, y as f32 + dy))
+                .filter(|(dx, dy)| contains(x as f32 + dx, y as f32 + dy))
                 .count() as f32
                 / 4.0;
             if coverage == 0.0 {
                 continue;
             }
             let original = *background.get_pixel(answer + x, piece_y + y);
-            let edge = !inside(x as f32 - 1.0, y as f32)
-                || !inside(x as f32 + 1.0, y as f32)
-                || !inside(x as f32, y as f32 - 1.0)
-                || !inside(x as f32, y as f32 + 1.0);
+            let (xf, yf) = (x as f32, y as f32);
+            let lower_edge = !contains(xf, yf + 1.0);
+            let edge = lower_edge
+                || !contains(xf - 1.0, yf)
+                || !contains(xf + 1.0, yf)
+                || !contains(xf, yf - 1.0);
             let mut fragment = original;
             if edge {
                 let bright = mix(
@@ -155,16 +115,16 @@ pub(crate) fn new_task(expires: i64, remaining: u32) -> (Value, u32) {
             }
             fragment[3] = (coverage * 255.0) as u8;
             piece.put_pixel(x, y, fragment);
-            let hole = mix(
-                [original[0], original[1], original[2]],
-                [10, 22, 34],
-                0.68 * coverage,
-            );
-            background.put_pixel(
-                answer + x,
-                piece_y + y,
-                Rgba([hole[0], hole[1], hole[2], 255]),
-            );
+            let tint = if lower_edge {
+                [99, 117, 129]
+            } else {
+                [10, 22, 34]
+            };
+            for (cutout_x, cutout_y) in positions {
+                let pixel = background.get_pixel_mut(cutout_x + x, cutout_y + y);
+                let hole = mix([pixel[0], pixel[1], pixel[2]], tint, 0.68 * coverage);
+                *pixel = Rgba([hole[0], hole[1], hole[2], 255]);
+            }
         }
     }
     (
@@ -179,6 +139,31 @@ pub(crate) fn new_task(expires: i64, remaining: u32) -> (Value, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cutouts_are_in_bounds_at_distinct_heights_and_do_not_overlap() {
+        use rand::{rngs::StdRng, SeedableRng};
+
+        let mut rng = StdRng::seed_from_u64(0);
+        for answer in MIN_CUTOUT_X..=MAX_CUTOUT_X {
+            for piece_y in [
+                MIN_CUTOUT_Y,
+                (MIN_CUTOUT_Y + MAX_CUTOUT_Y) / 2,
+                MAX_CUTOUT_Y,
+            ] {
+                let positions = cutout_positions(&mut rng, answer, piece_y);
+                assert_eq!(positions[0], (answer, piece_y));
+                for (i, (x, y)) in positions.into_iter().enumerate() {
+                    assert!(x + PIECE <= WIDTH && y + PIECE <= HEIGHT);
+                    for &(previous_x, previous_y) in &positions[..i] {
+                        assert!(x.abs_diff(previous_x) >= PIECE);
+                        assert!(y.abs_diff(previous_y) >= CUTOUT_Y_SPACING);
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn scenes_are_unique_and_do_not_publish_coordinates() {
         let mut images = std::collections::HashSet::new();

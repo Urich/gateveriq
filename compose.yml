@@ -1,7 +1,7 @@
 services:
   gateveriq:
     build: .
-    image: ${GATEVERIQ_IMAGE:-ghcr.io/urich/gateveriq:v0.3.0}
+    image: ${GATEVERIQ_IMAGE:-ghcr.io/urich/gateveriq:v0.4.0}
     restart: unless-stopped
     stop_grace_period: 30s
     ports:
